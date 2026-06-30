@@ -1,0 +1,28 @@
+{
+  "name": "mandated-vault-rebalancer",
+  "version": "0.1.0",
+  "description": "Architecture PoC composing ERC-8001, ERC-8312, and ERC-8301 for a bounded mock vault rebalancer.",
+  "type": "module",
+  "bin": {
+    "mandated-vault-rebalancer": "./bin/mandated-vault-rebalancer.js",
+    "mvr": "./bin/mandated-vault-rebalancer.js"
+  },
+  "scripts": {
+    "build": "node --check src/index.js && node --check bin/mandated-vault-rebalancer.js",
+    "demo": "node bin/mandated-vault-rebalancer.js demo:all",
+    "demo:happy": "node bin/mandated-vault-rebalancer.js demo:happy",
+    "demo:per-vault": "node bin/mandated-vault-rebalancer.js demo:per-vault",
+    "demo:risk": "node bin/mandated-vault-rebalancer.js demo:risk",
+    "demo:turnover": "node bin/mandated-vault-rebalancer.js demo:turnover",
+    "demo:workflow": "node bin/mandated-vault-rebalancer.js demo:workflow",
+    "format": "node scripts/format-check.js --write",
+    "format:check": "node scripts/format-check.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --test",
+    "typecheck": "node --check src/index.js && node --check src/*.js && node --check test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
