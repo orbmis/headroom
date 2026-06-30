@@ -8,7 +8,11 @@
     "mvr": "./bin/mandated-vault-rebalancer.js"
   },
   "scripts": {
-    "build": "node --check src/index.js && node --check bin/mandated-vault-rebalancer.js",
+    "build": "node --check src/index.js && node --check bin/mandated-vault-rebalancer.js && npx hardhat compile",
+    "chain": "npx hardhat node",
+    "compile": "npx hardhat compile",
+    "deploy:local": "npx hardhat run scripts/deploy.js --network localhost",
+    "deploy:base-sepolia": "npx hardhat run scripts/deploy.js --network baseSepolia",
     "demo": "node bin/mandated-vault-rebalancer.js demo:all",
     "demo:happy": "node bin/mandated-vault-rebalancer.js demo:happy",
     "demo:per-vault": "node bin/mandated-vault-rebalancer.js demo:per-vault",
@@ -24,5 +28,10 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.13",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.9.0"
+  }
 }

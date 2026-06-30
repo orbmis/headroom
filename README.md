@@ -82,7 +82,11 @@ npm run lint             # local lint checks
 npm run format:check     # formatting check
 npm run format           # normalize trailing whitespace/newlines
 npm run typecheck        # syntax checks for JS modules
-npm run build            # syntax checks for entrypoints
+npm run compile          # compile Solidity contracts with Hardhat
+npm run build            # syntax checks and contract compilation
+npm run chain            # start a local Hardhat JSON-RPC node
+npm run deploy:local     # deploy the Solidity PoC to the local Hardhat node
+npm run deploy:base-sepolia # deploy to Base Sepolia when RPC/private key env vars are set
 npm run demo             # run all demo scenarios
 ```
 
@@ -110,6 +114,40 @@ Add `--automatic` to bypass prompts for CI, recording output, or scripted demos:
 npm run demo -- --automatic
 npm run demo:happy -- --automatic
 ```
+
+## Local EVM Deployment
+
+The default demo commands still work without a chain by using the in-memory simulation. To run the same individual scenario commands against deployed contracts, start a local Hardhat node and deploy first:
+
+```sh
+npm run chain
+npm run deploy:local
+npm run demo:happy
+```
+
+After `deploy:local`, individual scenario commands such as `npm run demo:happy`, `npm run demo:per-vault`, `npm run demo:risk`, `npm run demo:turnover`, and `npm run demo:workflow` detect `deployments/localhost.json` and use the local EVM when the node is reachable. The CLI prints transaction feedback for each onchain step:
+
+```text
+Submitting transaction: PortfolioManager.createTask
+  tx: 0x...
+  waiting for inclusion...
+Included in block: 83
+  gas used: 138151
+```
+
+For deterministic onchain scenario output, redeploy with `npm run deploy:local` before running another individual scenario. The local EVM is persistent, so a successful rebalance changes portfolio and cursor state for later commands. `npm run demo` continues to use the in-memory simulation for a deterministic all-scenarios walkthrough.
+
+Rejected proposals are exercised through the contract path rather than simulated away. The CLI catches the revert, reports the contract rejection reason, and then shows that funds did not move and the ERC-8312 cursor did not advance. On Hardhat's local JSON-RPC server, some reverted sends are returned by the node before a transaction hash is exposed; the CLI prints `tx: not returned by local RPC` in that case and still decodes the Solidity revert reason. This differs from the in-memory simulation, which records local rejection receipts for educational inspection.
+
+Base Sepolia uses the same deployment script:
+
+```sh
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org \
+PRIVATE_KEY=0x... \
+npm run deploy:base-sepolia
+```
+
+Base Sepolia demos are intentionally a second step after local EVM validation. The current CLI auto-detects `deployments/localhost.json`; Base Sepolia transaction-driving can reuse the same contract ABIs and deployment metadata once the local flow is stable.
 
 CLI inspection commands:
 
