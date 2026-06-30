@@ -49,7 +49,7 @@ npm run build            # syntax checks for entrypoints
 npm run demo             # run all demo scenarios
 ```
 
-Scenario commands:
+Scenario commands are interactive by default:
 
 ```sh
 npm run demo:happy
@@ -57,6 +57,21 @@ npm run demo:per-vault
 npm run demo:risk
 npm run demo:turnover
 npm run demo:workflow
+```
+
+Each scenario pauses before every meaningful step and asks for confirmation after explaining what that step is about to do. You can also call the CLI directly:
+
+```sh
+node bin/mandated-vault-rebalancer.js demo:happy
+node bin/mandated-vault-rebalancer.js demo:turnover
+node bin/mandated-vault-rebalancer.js demo:all
+```
+
+Add `--automatic` to bypass prompts for CI, recording output, or scripted demos:
+
+```sh
+npm run demo -- --automatic
+npm run demo:happy -- --automatic
 ```
 
 CLI inspection commands:
