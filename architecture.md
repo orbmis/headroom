@@ -6,13 +6,27 @@
 
 `EnvelopeRegistry` is the ERC-8312-shaped bounded-action layer. It registers an envelope against an accepted mandate, computes `capabilityRoot`, stores `cursorRoot`, exposes readable cursor state, enforces active/expired/revoked status, and advances the cursor only when a substrate witness matches the current cursor root and remaining turnover.
 
-`ControlledSubstrate` owns the mock portfolio. It holds mock USDC, deposits into vaults, withdraws from source vaults, deposits into target vaults, and advances the cursor as part of successful execution. If execution or cursor advancement fails, the local simulation restores token, vault, and envelope state.
+`PortfolioManager` is the ERC-8301-shaped workflow coordinator. It creates tasks, accepts proposals, runs verification, settles verified or rejected tasks, marks successful execution, and completes successful tasks. It rejects step skipping and resolved proposal reuse. It does not hold assets.
 
-`RebalanceWorkflow` is the ERC-8301-shaped workflow layer. It creates tasks, accepts proposals, runs verification, marks execution or rejection, and completes the task. It rejects step skipping and resolved proposal reuse.
+`ExecutionSubstrate` owns the mock portfolio. It holds mock USDC, deposits into vaults, withdraws from source vaults, deposits into target vaults, enforces mandate constraints at execution time, and advances the cursor as part of successful execution. If execution or cursor advancement fails, the local simulation restores token, vault, and envelope state. It does not create or advance workflow tasks.
 
 `MandateVerifier` is deterministic policy logic. It reads accepted mandate terms, envelope status, cursor headroom, live substrate allocation, vault metadata, and workflow state before approving a proposal.
 
 `ReceiptStore` records every attempted rebalance, successful or rejected.
+
+```mermaid
+flowchart TD
+    A[ERC-8001 Accepted Mandate] --> B[ERC-8312 Envelope]
+    B --> C[PortfolioManager]
+    C --> D[ERC-8301 Rebalance Task]
+    D --> E[Agent Proposal]
+    E --> F[PortfolioManager Verification]
+    F -->|Approved| G[ExecutionSubstrate]
+    F -->|Rejected| H[Rejected Receipt]
+    G --> I[Mock ERC-4626 Vaults]
+    G --> J[Advance ERC-8312 Cursor]
+    J --> K[Completed Receipt]
+```
 
 ## Accepted Mandate Flow
 
@@ -36,6 +50,10 @@ The cursor tracks current allocation by vault, allocation by risk bucket, total 
 
 The cursor advances only after successful substrate execution. The witness binds to the previous cursor root, next allocation, turnover delta, task ID, and proposal hash. If the turnover delta exceeds remaining headroom, advancement is rejected.
 
+## Trigger Model
+
+The PortfolioManager does not trigger itself. It is a passive smart contract-shaped coordinator called by external transactions. In this local PoC, the CLI scripts create tasks, submit proposals, verify them, and settle them. In a fuller deployment those same calls could come from a user, an offchain agent process, a keeper, or an automation service. This update does not implement those external operators.
+
 ## Workflow Sequence
 
 The workflow sequence is:
@@ -43,9 +61,9 @@ The workflow sequence is:
 1. Task created.
 2. Agent proposal submitted.
 3. Proposal verified.
-4. Rebalance executed or rejected.
-5. Cursor advanced if executed.
-6. Task completed.
+4. PortfolioManager settles the task.
+5. ExecutionSubstrate executes and advances the cursor if approved, or records a rejection receipt if rejected.
+6. PortfolioManager completes successfully executed tasks. Rejected tasks remain terminal at `Rejected`.
 
 Execution before verification is rejected. Completion before execution or rejection is rejected. A resolved proposal cannot be submitted again.
 
@@ -66,12 +84,20 @@ For a proposal, the verifier checks:
 - workflow step validity
 - proposal reuse
 
-If approved, the substrate withdraws from the source vault, deposits into the target vault, advances the cursor, and records a success receipt. If rejected, no funds move, the cursor does not advance, and a rejection receipt is recorded.
+If approved, PortfolioManager issues the execution authorization to ExecutionSubstrate. ExecutionSubstrate withdraws from the source vault, deposits into the target vault, advances the cursor, and records a success receipt. If rejected, PortfolioManager does not authorize movement. ExecutionSubstrate records a rejection receipt, no funds move, and the cursor does not advance.
+
+## Why PortfolioManager and ExecutionSubstrate Are Separate
+
+PortfolioManager is the lifecycle and ordering surface. It answers whether a task exists, whether a proposal was submitted, whether verification has happened, and whether a resolved proposal is being reused.
+
+ExecutionSubstrate is the enforcement and asset surface. It answers whether funds can move, whether the live cursor has headroom, and whether cursor advancement succeeded atomically with vault movement.
+
+The boundary matters because the agent never moves funds directly. The agent proposes into the workflow. The substrate accepts only PortfolioManager-authorized execution of verified tasks.
 
 ## Happy Path
 
-The happy path moves 500 mock USDC from Vault A to Vault D. The move improves yield, leaves Vault D at exactly 30%, keeps Growth plus Experimental at 55%, keeps Experimental at 0%, consumes 500 turnover, advances the cursor, completes the workflow, and records a receipt.
+The happy path moves 500 mock USDC from Vault A to Vault D. The move improves yield, leaves Vault D at exactly 30%, keeps Growth plus Experimental at 55%, keeps Experimental at 0%, consumes 500 turnover, advances the cursor through ExecutionSubstrate, completes the PortfolioManager workflow, and records a receipt.
 
 ## Failure Path
 
-The central failure path starts with 7,700 of 8,000 mock USDC turnover consumed. A proposed 500 mock USDC move from Vault A to Vault D satisfies local vault, yield, and risk checks. It fails only because remaining ERC-8312 cursor headroom is 300. The substrate records a rejection receipt and leaves allocation and cursor root unchanged.
+The central failure path starts with 7,700 of 8,000 mock USDC turnover consumed. A proposed 500 mock USDC move from Vault A to Vault D satisfies local vault, yield, and risk checks. It fails only because remaining ERC-8312 cursor headroom is 300. PortfolioManager marks the task rejected, ExecutionSubstrate records a rejection receipt, and allocation and cursor root remain unchanged.

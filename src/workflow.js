@@ -10,9 +10,10 @@ export const WorkflowStatus = Object.freeze({
   COMPLETED: "Completed"
 });
 
-export class RebalanceWorkflow {
-  constructor({ verifier, clock }) {
+export class PortfolioManager {
+  constructor({ verifier, executionSubstrate, clock }) {
     this.verifier = verifier;
+    this.executionSubstrate = executionSubstrate;
     this.clock = clock;
     this.tasks = new Map();
     this.sequence = 0;
@@ -82,13 +83,59 @@ export class RebalanceWorkflow {
     return clone(task);
   }
 
+  settleTask(taskId) {
+    const task = this.#getMutableTask(taskId);
+    assertCondition(
+      [WorkflowStatus.VERIFIED, WorkflowStatus.REJECTED].includes(task.status),
+      "WORKFLOW_SETTLE_BEFORE_VERIFY",
+      "task must be verified or rejected before settlement"
+    );
+
+    if (task.status === WorkflowStatus.REJECTED) {
+      const receipt = this.executionSubstrate.recordRejectedAttempt(
+        clone(task),
+        this.#executionAuthorization(task, "record-rejection")
+      );
+      return {
+        task: clone(task),
+        receipt
+      };
+    }
+
+    assertCondition(!task.resolved, "WORKFLOW_ALREADY_RESOLVED", "resolved proposal cannot be reused");
+    const receipt = this.executionSubstrate.executeVerifiedRebalance(clone(task), this.#executionAuthorization(task, "execute"));
+    if (receipt.verificationResult === VerificationStatus.APPROVED) {
+      this.#markExecutedFromReceipt(task, receipt);
+    } else {
+      task.status = WorkflowStatus.REJECTED;
+      task.rejectionReason = receipt.rejectionReason;
+      task.resolved = true;
+    }
+    return {
+      task: clone(task),
+      receipt
+    };
+  }
+
   markExecuted(taskId) {
     const task = this.#getMutableTask(taskId);
     assertCondition(task.status === WorkflowStatus.VERIFIED, "WORKFLOW_EXECUTE_BEFORE_VERIFY", "cannot execute before successful verification");
     assertCondition(!task.resolved, "WORKFLOW_ALREADY_RESOLVED", "resolved proposal cannot be reused");
+    assertCondition(
+      false,
+      "WORKFLOW_EXECUTION_REQUIRES_SUBSTRATE",
+      "execution must be settled through ExecutionSubstrate"
+    );
+  }
+
+  #markExecutedFromReceipt(task, receipt) {
+    assertCondition(
+      receipt?.taskId === task.taskId && receipt?.verificationResult === VerificationStatus.APPROVED,
+      "WORKFLOW_MISSING_SUBSTRATE_RECEIPT",
+      "PortfolioManager requires an approved ExecutionSubstrate receipt before marking execution"
+    );
     task.status = WorkflowStatus.EXECUTED;
     task.resolved = true;
-    return clone(task);
   }
 
   rejectVerifiedTask(taskId, rejectionReason) {
@@ -125,4 +172,16 @@ export class RebalanceWorkflow {
     assertCondition(Boolean(task), "WORKFLOW_TASK_NOT_FOUND", "workflow task was not found", { taskId });
     return task;
   }
+
+  #executionAuthorization(task, action) {
+    return {
+      issuedBy: "PortfolioManager",
+      action,
+      taskId: task.taskId,
+      proposalHash: task.proposalHash,
+      status: task.status
+    };
+  }
 }
+
+export const RebalanceWorkflow = PortfolioManager;

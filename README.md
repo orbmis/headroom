@@ -1,10 +1,10 @@
 # mandated-vault-rebalancer
 
-`mandated-vault-rebalancer` is a local, testable architecture PoC showing how ERC-8001-shaped authority, ERC-8312-shaped bounded-action cursors, and an ERC-8301-shaped workflow can compose for a bounded autonomous DeFi workflow. A user and agent accept a shared mock ERC-4626 portfolio mandate, bind it into a live bounded-action envelope, and route rebalance attempts through an ordered workflow and enforcing substrate.
+`mandated-vault-rebalancer` is the Headroom local architecture PoC showing how ERC-8001-shaped authority, ERC-8312-shaped bounded-action cursors, and an ERC-8301-shaped workflow can compose for a bounded autonomous DeFi workflow. A user and agent accept a shared mock ERC-4626 portfolio mandate, bind it into a live bounded-action envelope, route rebalance attempts through `PortfolioManager`, and execute only through `ExecutionSubstrate`.
 
 The PoC proves the core composition:
 
-ERC-8001 records the accepted mandate. ERC-8312 meters consumption of that mandate. The substrate enforces the live cursor. ERC-8301 orders the rebalance workflow.
+ERC-8001 records the accepted mandate. ERC-8312 meters consumption of that mandate. `PortfolioManager` orders the rebalance workflow. `ExecutionSubstrate` enforces the live cursor and moves assets.
 
 This is not a production DeFi protocol, a profitable yield strategy, or financial advice.
 
@@ -25,7 +25,44 @@ The accepted mandate commits to the principal, agent, approved asset, approved v
 
 The ERC-8312-shaped envelope binds to `_agentIntentDigest` and `agreementHash` through `capabilityRoot`. Its cursor exposes allocation by vault, allocation by risk bucket, cumulative turnover, remaining turnover, ordering marker, status, expiry, and `cursorRoot`.
 
-The controlled substrate owns the simulated portfolio. Rebalances are only executed after deterministic verification, and cursor advancement is tied to execution with rollback semantics in the local simulation.
+`PortfolioManager` owns the ERC-8301-shaped task lifecycle: task creation, proposal submission, verification, execution settlement, completion, and rejection. It does not hold assets.
+
+`ExecutionSubstrate` owns the simulated portfolio. It holds mock USDC, interacts with vaults, checks mandate constraints at execution time, and advances the ERC-8312 cursor only when execution succeeds. It does not create workflow tasks.
+
+```mermaid
+flowchart TD
+    P[Principal creates mandate terms] --> A[ERC-8001 IntentRegistry]
+    AG[Agent accepts mandate] --> A
+    A --> M[ERC-8001 Accepted Mandate]
+    P2[Principal/setup script registers envelope] --> B[ERC-8312 EnvelopeRegistry]
+    M --> B
+    B --> E[ERC-8312 Envelope + Cursor]
+    E --> C[PortfolioManager]
+    C --> D[ERC-8301 Rebalance Task]
+    AP[Agent submits rebalance proposal] --> C
+    C --> F[PortfolioManager Verification]
+    F -->|Approved| G[ExecutionSubstrate]
+    F -->|Rejected| H[Rejected Receipt]
+    G --> I[Mock ERC-4626 Vaults]
+    G --> J[Advance ERC-8312 Cursor]
+    J --> K[Completed Receipt]
+
+    classDef contract fill:#e8f1ff,stroke:#2f6fed,color:#0b2e59,stroke-width:1px
+    classDef principal fill:#fff4d6,stroke:#c98200,color:#4a2c00,stroke-width:1px
+    classDef agent fill:#fde7f3,stroke:#c02673,color:#5f123d,stroke-width:1px
+    classDef receipt fill:#edf7ed,stroke:#2f8f46,color:#123d1f,stroke-width:1px
+
+    class A,B,C,G,I contract
+    class P,P2 principal
+    class AG,AP agent
+    class H,K receipt
+```
+
+Diagram colors: blue elements are smart-contract-shaped modules, yellow elements are principal/setup actions, pink elements are agent actions, and green elements are receipts.
+
+The PortfolioManager does not autonomously dispatch tasks. It is a smart contract-shaped coordinator and is triggered by transactions. In this PoC, tasks are created and advanced by local CLI scripts. In a fuller implementation, those transactions could be submitted by an offchain agent process, a keeper, or an automation service.
+
+ExecutionSubstrate is the PoC enforcement surface. It can later be replaced or complemented by a real account or wallet architecture, such as an ERC-4337 smart account, an ERC-7579 modular account, a Safe module, an EIP-7702 delegation path, a Coinbase Agent Wallet / AgentKit setup, or another agentic wallet design. The intended stable boundary is that PortfolioManager owns workflow orchestration, while the execution substrate owns asset movement and mandate enforcement.
 
 ## Install
 
@@ -105,7 +142,7 @@ node bin/mandated-vault-rebalancer.js allocate-initial
 
 `demo:turnover` starts with 7,700 of 8,000 mock USDC turnover already consumed. The agent proposes a 500 mock USDC move from Vault A to Vault D. The move is locally reasonable, but remaining cursor headroom is only 300, so ERC-8312-style aggregate metering rejects it. This is the central demonstration.
 
-`demo:workflow` attempts execution before verification. The ERC-8301-shaped workflow rejects the step violation before any substrate action.
+`demo:workflow` attempts execution before verification. `PortfolioManager` rejects the step violation before any `ExecutionSubstrate` action.
 
 ## Inspecting Cursor and Receipts
 

@@ -41,15 +41,16 @@ Expected result:
 
 - ERC-8001 accepted mandate is shown.
 - ERC-8312 envelope and cursor roots are shown.
-- ERC-8301 task reaches `Completed`.
+- PortfolioManager task reaches `Completed`.
 - Verification is `Approved`.
+- ExecutionSubstrate moves funds and advances the ERC-8312 cursor.
 - Vault A decreases from 2,500 to 2,000.
 - Vault D increases from 2,500 to 3,000.
 - Cumulative turnover becomes 500.
 - Remaining turnover becomes 7,500.
 - Receipt has no rejection reason.
 
-What it proves: a valid workflow can draw against the mandate and advance the cursor.
+What it proves: a valid workflow can draw against the mandate only through PortfolioManager-authorized ExecutionSubstrate execution.
 
 ## Per-Vault Failure
 
@@ -60,12 +61,13 @@ npm run demo:per-vault
 Expected result:
 
 - Verification is `Rejected`.
+- PortfolioManager task remains terminal at `Rejected`.
 - Rejection reason is `resulting allocation exceeds max per-vault allocation`.
 - Allocation remains unchanged.
 - Cursor root remains unchanged.
 - Receipt is recorded.
 
-What it proves: stateless concentration constraints are enforced before execution.
+What it proves: stateless concentration constraints are enforced before ExecutionSubstrate is authorized to move funds.
 
 ## Risk-Bucket Failure
 
@@ -76,12 +78,13 @@ npm run demo:risk
 Expected result:
 
 - Verification is `Rejected`.
+- PortfolioManager task remains terminal at `Rejected`.
 - Rejection reason is `resulting Growth plus Experimental exposure exceeds mandate cap`.
 - Allocation remains unchanged.
 - Cursor root remains unchanged.
 - Receipt is recorded.
 
-What it proves: aggregate exposure constraints are enforced by the substrate/verifier path.
+What it proves: aggregate exposure constraints are enforced by the PortfolioManager verifier and substrate path.
 
 ## Cumulative Turnover Failure
 
@@ -101,6 +104,7 @@ Expected result:
 - Yield improvement is sufficient.
 - Per-vault and risk-bucket limits are satisfied.
 - Verification is `Rejected`.
+- PortfolioManager task remains terminal at `Rejected`.
 - Rejection reason is `proposed turnover exceeds remaining ERC-8312 cursor headroom`.
 - Allocation remains unchanged.
 - Cursor root remains unchanged.
@@ -117,11 +121,11 @@ npm run demo:workflow
 Expected result:
 
 - The workflow rejects execution before verification.
-- No substrate action is attempted.
+- No ExecutionSubstrate action is attempted.
 - No funds move.
 - Cursor remains unchanged.
 
-What it proves: ERC-8301-shaped workflow ordering prevents step skipping.
+What it proves: PortfolioManager owns ERC-8301-shaped workflow ordering and prevents step skipping.
 
 ## Inspect Receipts
 
