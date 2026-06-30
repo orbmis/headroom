@@ -2,11 +2,25 @@
 
 ## Setup
 
-Install and run the full demo:
+Install and run the full demo interactively:
 
 ```sh
 npm install
 npm run demo
+```
+
+Run a single interactive scenario:
+
+```sh
+npm run demo:happy
+node bin/mandated-vault-rebalancer.js demo:turnover
+```
+
+The interactive mode pauses before each step after explaining what is about to happen. Press Enter to continue or type `n` to stop. Use `--automatic` when recording output, running CI, or presenting without pauses:
+
+```sh
+npm run demo -- --automatic
+node bin/mandated-vault-rebalancer.js demo:all --automatic
 ```
 
 Inspect the initialized environment:

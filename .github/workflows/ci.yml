@@ -20,4 +20,4 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
-      - run: npm run demo
+      - run: npm run demo -- --automatic
