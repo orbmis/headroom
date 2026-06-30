@@ -131,7 +131,6 @@ async function runTurnoverBreach() {
       "It proves that ERC-8312-style cursor metering catches cumulative mandate exhaustion across actions. The action is rejected, funds do not move, and the cursor root stays unchanged."
   });
   printArchitectureAnchors(env);
-  printCursor(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault D",
@@ -152,6 +151,7 @@ async function runWorkflowViolation() {
       "It proves that execution cannot bypass workflow ordering. The substrate is never invoked, no funds move, and the cursor remains unchanged."
   });
   printArchitectureAnchors(env);
+  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   const task = await guidedStep({
     number: 1,
     title: "Create ERC-8301 task",
@@ -243,6 +243,7 @@ function inspectReceipts() {
 }
 
 async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
+  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   let task;
   await guidedStep({
     number: 1,
@@ -348,6 +349,7 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
         outputDetail("rejectionReason", storedReceipt.rejectionReason ?? "none", "Reason recorded when execution was rejected."),
         outputDetail("cursorAdvanced", storedReceipt.cursorAfter ? "yes" : "no", "Whether ERC-8312 cursor state changed.")
       ]);
+      printCursorDelta(storedReceipt);
     }
   });
 
@@ -495,6 +497,63 @@ function printCursor(env) {
   for (const [bucket, amount] of Object.entries(cursor.allocationByRiskBucket)) {
     console.log(`    ${bucket}: ${formatAmount(amount)}`);
   }
+}
+
+function printCursorDetailsPanel(env, title) {
+  const cursor = env.envelopeRegistry.readCursor(env.envelope.id);
+  console.log("");
+  console.log(color.bold(title));
+  console.log("");
+  printDetailTable([
+    inputDetail("status", cursor.status, "Lifecycle status exposed by the cursor."),
+    inputDetail("isActive", cursor.isActive ? "yes" : "no", "Whether the bound envelope is active and unexpired."),
+    inputDetail("cursorRoot", cursor.cursorRoot, "Commitment to the current cursor state."),
+    inputDetail("portfolioValue", formatAmount(cursor.portfolioValue), "Total mock USDC tracked by the cursor."),
+    inputDetail("cumulativeTurnover", `${formatAmount(cursor.cumulativeTurnover)} / ${formatAmount(cursor.maxCumulativeTurnover)}`, "Aggregate turnover consumed under the mandate."),
+    inputDetail("remainingTurnover", formatAmount(cursor.remainingTurnover), "Turnover headroom still available to the agent."),
+    inputDetail("lastRebalanceSequence", cursor.lastRebalanceSequence, "Ordering marker for successful cursor advances."),
+    inputDetail("expiresAt", cursor.expiresAt, "Expiry inherited from the accepted mandate.")
+  ]);
+
+  console.log("");
+  console.log(color.bold("Cursor allocation by vault"));
+  console.log("");
+  printDetailTable(
+    Object.entries(cursor.allocationByVault).map(([vault, amount]) =>
+      inputDetail(vault, formatAmount(amount), "Current allocation committed by the cursor.")
+    )
+  );
+
+  console.log("");
+  console.log(color.bold("Cursor risk exposure"));
+  console.log("");
+  printDetailTable(
+    Object.entries(cursor.allocationByRiskBucket).map(([bucket, amount]) =>
+      inputDetail(bucket, formatAmount(amount), "Current risk-bucket exposure committed by the cursor.")
+    )
+  );
+  console.log("");
+}
+
+function printCursorDelta(receipt) {
+  const before = receipt.cursorBefore;
+  const after = receipt.cursorAfter ?? receipt.cursorBefore;
+  const advanced = Boolean(receipt.cursorAfter);
+  console.log("");
+  console.log(color.bold("ERC-8312 cursor delta"));
+  console.log("");
+  printDetailTable([
+    inputDetail("cursorRootBefore", before.cursorRoot, "Cursor commitment before substrate handling."),
+    inputDetail("cursorRootAfter", advanced ? after.cursorRoot : `${after.cursorRoot} (unchanged)`, "Cursor commitment after substrate handling."),
+    inputDetail("turnoverBefore", formatAmount(before.cumulativeTurnover), "Cumulative turnover before this attempt."),
+    inputDetail("turnoverAfter", advanced ? formatAmount(after.cumulativeTurnover) : `${formatAmount(after.cumulativeTurnover)} (unchanged)`, "Cumulative turnover after this attempt."),
+    inputDetail("remainingBefore", formatAmount(before.remainingTurnover), "Remaining turnover before this attempt."),
+    inputDetail("remainingAfter", advanced ? formatAmount(after.remainingTurnover) : `${formatAmount(after.remainingTurnover)} (unchanged)`, "Remaining turnover after this attempt."),
+    inputDetail("sequenceBefore", before.lastRebalanceSequence, "Cursor sequence before this attempt."),
+    inputDetail("sequenceAfter", advanced ? after.lastRebalanceSequence : `${after.lastRebalanceSequence} (unchanged)`, "Cursor sequence after this attempt."),
+    inputDetail("advanced", advanced ? "yes" : "no", "Whether the ERC-8312 registry accepted a cursor advance.")
+  ]);
+  console.log("");
 }
 
 function printPortfolio(env) {
