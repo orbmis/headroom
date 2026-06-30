@@ -60,7 +60,7 @@ async function main() {
 
 async function runHappyPath() {
   const env = createDemoEnvironment();
-  printHeader("Scenario 1: Happy path");
+  printHeader("Scenario 1: Happy path 😀");
   printScenarioIntro({
     summary:
       "This scenario demonstrates the complete successful path for a bounded autonomous rebalance. The accepted ERC-8001 mandate authorizes the agent, the ERC-8312 cursor has enough remaining turnover, and the ERC-8301 workflow proceeds in the required order.",
@@ -81,7 +81,7 @@ async function runHappyPath() {
 
 async function runPerVaultBreach() {
   const env = createDemoEnvironment();
-  printHeader("Scenario 2: Per-vault concentration breach");
+  printHeader("Scenario 2: Per-vault concentration breach 🚧");
   printScenarioIntro({
     summary:
       "This scenario demonstrates a locally attractive rebalance that fails because it would concentrate too much capital in a single vault.",
@@ -101,7 +101,7 @@ async function runPerVaultBreach() {
 
 async function runRiskBreach() {
   const env = createDemoEnvironment();
-  printHeader("Scenario 3: Risk-bucket breach");
+  printHeader("Scenario 3: Risk-bucket breach ⚖️");
   printScenarioIntro({
     summary:
       "This scenario demonstrates that approval of an individual target vault is not enough when aggregate risk exposure would exceed the accepted mandate.",
@@ -121,7 +121,7 @@ async function runRiskBreach() {
 
 async function runTurnoverBreach() {
   const env = createDemoEnvironment({ initialTurnover: 7700 });
-  printHeader("Scenario 4: Cumulative turnover breach");
+  printHeader("Scenario 4: Cumulative turnover breach ⏳");
   printScenarioIntro({
     summary:
       "This is the central ERC-8312 demonstration. The proposed rebalance looks valid under local vault, yield, and risk checks, but the live cursor shows that most aggregate turnover authority has already been consumed.",
@@ -142,7 +142,7 @@ async function runTurnoverBreach() {
 
 async function runWorkflowViolation() {
   const env = createDemoEnvironment();
-  printHeader("Scenario 5: Workflow step violation");
+  printHeader("Scenario 5: Workflow step violation 🛑");
   printScenarioIntro({
     summary:
       "This scenario demonstrates that the ERC-8301-shaped workflow is not just logging state after the fact. It actively prevents step skipping.",
@@ -427,7 +427,7 @@ function printHeader(title) {
 
 function printInteractiveModeNote() {
   if (!automatic && isDemoCommand(command)) {
-    console.log("Note: interactive mode - run with `--automatic` to avoid prompts");
+    console.log("⚠️  Note: interactive mode - run `npm run demo:happy -- --automatic` to avoid prompts");
   }
 }
 
@@ -610,8 +610,8 @@ function printDetailTable(details) {
   const normalized = details.map((detail) =>
     Array.isArray(detail) ? inputDetail(detail[0], detail[1], detail[2] ?? "") : detail
   );
-  const keyWidth = Math.max("Key".length, ...normalized.map((detail) => String(detail.key).length));
-  const valueWidth = Math.max("Value".length, ...normalized.map((detail) => String(detail.value).length));
+  const keyWidth = Math.max(20, "Key".length, ...normalized.map((detail) => String(detail.key).length));
+  const valueWidth = Math.max(80, "Value".length, ...normalized.map((detail) => String(detail.value).length));
   const separator = `  ${"-".repeat(keyWidth)}  ${"-".repeat(valueWidth)}  ${"-".repeat(36)}`;
 
   console.log(`  ${color.bold(pad("Key", keyWidth))}  ${color.bold(pad("Value", valueWidth))}  ${color.bold("Description")}`);
