@@ -9,6 +9,16 @@ import {
   formatAmount,
   runProposal
 } from "../src/index.js";
+import {
+  createEvmDemoEnvironment,
+  createEvmTask,
+  executeEvmTask,
+  readEvmAllocation,
+  readEvmCursor,
+  setEvmTurnoverForDemo,
+  submitEvmProposal,
+  verifyEvmProposal
+} from "../src/evm.js";
 
 const rawArgs = process.argv.slice(2);
 const automatic = rawArgs.includes("--automatic");
@@ -61,7 +71,7 @@ async function main() {
 }
 
 async function runHappyPath() {
-  const env = createDemoEnvironment();
+  const env = await createScenarioEnvironment();
   printHeader("Scenario 1: Happy path 😀");
   printScenarioIntro({
     summary:
@@ -71,18 +81,18 @@ async function runHappyPath() {
     proves:
       "It proves that a valid action can execute only after PortfolioManager verification, that ExecutionSubstrate moves funds, that the ERC-8312 cursor advances atomically, and that a success receipt records the transition."
   });
-  printArchitectureAnchors(env);
-  printPortfolio(env);
+  await printArchitectureAnchors(env);
+  await printPortfolio(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault D",
     amount: 500
   });
-  printResult(env, result);
+  await printResult(env, result);
 }
 
 async function runPerVaultBreach() {
-  const env = createDemoEnvironment();
+  const env = await createScenarioEnvironment();
   printHeader("Scenario 2: Per-vault concentration breach 🚧");
   printScenarioIntro({
     summary:
@@ -92,17 +102,17 @@ async function runPerVaultBreach() {
     proves:
       "It proves that per-vault allocation bounds are enforced before execution, rejected proposals do not move funds, and rejected proposals do not advance the cursor."
   });
-  printArchitectureAnchors(env);
+  await printArchitectureAnchors(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault D",
     amount: 700
   });
-  printResult(env, result);
+  await printResult(env, result);
 }
 
 async function runRiskBreach() {
-  const env = createDemoEnvironment();
+  const env = await createScenarioEnvironment();
   printHeader("Scenario 3: Risk-bucket breach ⚖️");
   printScenarioIntro({
     summary:
@@ -112,17 +122,17 @@ async function runRiskBreach() {
     proves:
       "It proves that PortfolioManager verification and ExecutionSubstrate enforcement apply portfolio-level risk-bucket limits, not just per-vault checks."
   });
-  printArchitectureAnchors(env);
+  await printArchitectureAnchors(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault E",
     amount: 1500
   });
-  printResult(env, result);
+  await printResult(env, result);
 }
 
 async function runTurnoverBreach() {
-  const env = createDemoEnvironment({ initialTurnover: 7700 });
+  const env = await createScenarioEnvironment({ initialTurnover: 7700 });
   printHeader("Scenario 4: Cumulative turnover breach ⏳");
   printScenarioIntro({
     summary:
@@ -132,17 +142,17 @@ async function runTurnoverBreach() {
     proves:
       "It proves that ERC-8312-style cursor metering catches cumulative mandate exhaustion across actions. The action is rejected, funds do not move, and the cursor root stays unchanged."
   });
-  printArchitectureAnchors(env);
+  await printArchitectureAnchors(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault D",
     amount: 500
   });
-  printResult(env, result);
+  await printResult(env, result);
 }
 
 async function runWorkflowViolation() {
-  const env = createDemoEnvironment();
+  const env = await createScenarioEnvironment();
   printHeader("Scenario 5: Workflow step violation 🛑");
   printScenarioIntro({
     summary:
@@ -152,8 +162,8 @@ async function runWorkflowViolation() {
     proves:
       "It proves that execution cannot bypass PortfolioManager workflow ordering. ExecutionSubstrate is never invoked, no funds move, and the cursor remains unchanged."
   });
-  printArchitectureAnchors(env);
-  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
+  await printArchitectureAnchors(env);
+  await printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   const task = await guidedStep({
     number: 1,
     title: "Create ERC-8301 task",
@@ -161,7 +171,7 @@ async function runWorkflowViolation() {
     intent:
       "PortfolioManager will create a new rebalance task and bind it to the already accepted mandate and active bounded-action envelope. This establishes the ordered execution context before any agent proposal can be considered.",
     action: () =>
-      env.portfolioManager.createTask({
+      createTask(env, {
         intentDigest: env.intent.agentIntentDigest,
         envelopeId: env.envelope.id,
         agent: AGENT
@@ -179,10 +189,14 @@ async function runWorkflowViolation() {
     layer: "PortfolioManager / ERC-8301 workflow",
     intent:
       "The demo will deliberately call the execution transition too early. PortfolioManager must reject this because no proposal has been submitted, no verifier has approved it, and no ExecutionSubstrate action is authorized.",
-    action: () => {
+    action: async () => {
       try {
-        env.portfolioManager.markExecuted(task.taskId);
-        return { rejected: false, reason: null };
+        const attemptedExecution = await markExecutedTooEarly(env, task.taskId);
+        const rejectionReason = attemptedExecution?.receipt?.rejectionReason;
+        return {
+          rejected: Boolean(rejectionReason),
+          reason: rejectionReason
+        };
       } catch (error) {
         return { rejected: true, reason: error.message };
       }
@@ -195,18 +209,18 @@ async function runWorkflowViolation() {
       ]);
     }
   });
-  printCursor(env);
-  printPortfolio(env);
+  await printCursor(env);
+  await printPortfolio(env);
 }
 
-function inspectAll() {
+async function inspectAll() {
   const env = createDemoEnvironment();
   printHeader("Initialized local mandated-vault-rebalancer environment");
-  printArchitectureAnchors(env);
+  await printArchitectureAnchors(env);
   printIntent(env);
   printEnvelope(env);
-  printCursor(env);
-  printPortfolio(env);
+  await printCursor(env);
+  await printPortfolio(env);
 }
 
 function inspectIntent() {
@@ -221,16 +235,16 @@ function inspectEnvelope() {
   printEnvelope(env);
 }
 
-function inspectCursor() {
+async function inspectCursor() {
   const env = createDemoEnvironment();
   printHeader("ERC-8312 cursor");
-  printCursor(env);
+  await printCursor(env);
 }
 
-function inspectPortfolio() {
+async function inspectPortfolio() {
   const env = createDemoEnvironment();
   printHeader("ExecutionSubstrate portfolio");
-  printPortfolio(env);
+  await printPortfolio(env);
 }
 
 function inspectReceipts() {
@@ -244,8 +258,146 @@ function inspectReceipts() {
   printReceipts(env);
 }
 
+async function createScenarioEnvironment(options = {}) {
+  if (command !== "demo:all") {
+    const evmEnv = await createEvmDemoEnvironment();
+    if (evmEnv) {
+      console.log(color.dim("Using deployed local EVM contracts from deployments/localhost.json."));
+      if (options.initialTurnover) {
+        await setEvmTurnoverForDemo(evmEnv, options.initialTurnover, (line) => console.log(color.dim(line)));
+      }
+      return evmEnv;
+    }
+  }
+  return createDemoEnvironment(options);
+}
+
+async function createTask(env, taskInput) {
+  if (env.mode === "evm") {
+    return createEvmTask(env, (line) => console.log(color.dim(line)));
+  }
+  return env.portfolioManager.createTask(taskInput);
+}
+
+async function submitProposal(env, taskId, proposal, proposer) {
+  if (env.mode === "evm") {
+    return submitEvmProposal(env, taskId, proposal, (line) => console.log(color.dim(line)));
+  }
+  return env.portfolioManager.submitProposal(taskId, proposal, proposer);
+}
+
+async function verifyProposal(env, taskId) {
+  if (env.mode === "evm") {
+    return verifyEvmProposal(env, taskId, (line) => console.log(color.dim(line)));
+  }
+  return env.portfolioManager.verifyProposal(taskId);
+}
+
+async function settleTask(env, taskId, task) {
+  if (env.mode === "evm") {
+    if (!task.verification?.approved) {
+      const before = await loadEvmReceiptLikeRejection(env, task);
+      return {
+        task,
+        receipt: before
+      };
+    }
+    const executed = await executeEvmTask(env, taskId, (line) => console.log(color.dim(line)));
+    return executed;
+  }
+  return env.portfolioManager.settleTask(taskId);
+}
+
+async function completeTask(env, taskId) {
+  if (env.mode === "evm") {
+    return normalizeCompletedEvmTask(await env.contracts.portfolioManager.getTask(taskId), env);
+  }
+  return env.portfolioManager.completeTask(taskId);
+}
+
+async function markExecutedTooEarly(env, taskId) {
+  if (env.mode === "evm") {
+    return executeEvmTask(env, taskId, (line) => console.log(color.dim(line)));
+  }
+  return env.portfolioManager.markExecuted(taskId);
+}
+
+async function readCursor(env) {
+  if (env.mode === "evm") {
+    return readEvmCursor(env);
+  }
+  return env.envelopeRegistry.readCursor(env.envelope.id);
+}
+
+async function readAllocation(env) {
+  if (env.mode === "evm") {
+    return readEvmAllocation(env);
+  }
+  return env.executionSubstrate.getAllocationByVault();
+}
+
+async function cursorVerificationDetails(env) {
+  const cursor = await readCursor(env);
+  return [
+    inputDetail("currentCursorRoot", cursor.cursorRoot, "Live cursor commitment before verification."),
+    inputDetail("remainingTurnover", formatAmount(cursor.remainingTurnover), "Unused aggregate turnover headroom.")
+  ];
+}
+
+async function executionDetails(env) {
+  const allocation = await readAllocation(env);
+  const cursor = await readCursor(env);
+  return [
+    inputDetail("allocationBefore", compactAllocation(allocation), "Portfolio state before ExecutionSubstrate action."),
+    inputDetail("cursorRootBefore", cursor.cursorRoot, "Cursor commitment that execution must advance from.")
+  ];
+}
+
+async function loadEvmReceiptLikeRejection(env, task) {
+  const cursor = await readEvmCursor(env);
+  const allocation = await readEvmAllocation(env);
+  return {
+    taskId: task.taskId,
+    intentDigest: env.intent.agentIntentDigest,
+    agreementHash: env.intent.agreementHash,
+    envelopeId: env.envelope.id,
+    sourceVault: task.proposal?.sourceVault ?? null,
+    targetVault: task.proposal?.targetVault ?? null,
+    amount: task.proposal?.amount ?? null,
+    verificationResult: "Rejected",
+    rejectionReason: task.rejectionReason ?? "transaction reverted",
+    cursorBefore: cursor,
+    cursorAfter: null,
+    allocationBefore: allocation,
+    allocationAfter: null,
+    workflowStatus: task.status,
+    receiptHash: "reverted transaction"
+  };
+}
+
+function normalizeCompletedEvmTask(task, env) {
+  return {
+    taskId: task.taskId,
+    intentDigest: task.agentIntentDigest,
+    envelopeId: task.envelopeId,
+    agent: task.agent,
+    proposer: task.proposer,
+    proposalHash: task.proposalHash,
+    status: "Completed",
+    verificationStatus: "Approved",
+    verification: {
+      approved: true,
+      turnoverDelta: Number(task.amount)
+    },
+    rejectionReason: null,
+    resolved: task.resolved,
+    completedAt: "included onchain"
+  };
+}
+
 async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
-  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
+  const displayedProposer = env.mode === "evm" ? env.intent.terms.agent : proposer;
+  await printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   let task;
   await guidedStep({
     number: 1,
@@ -258,8 +410,8 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
       inputDetail("envelopeId", env.envelope.id, "ERC-8312 envelope that meters the mandate."),
       inputDetail("agent", env.intent.terms.agent, "Accepted agent allowed to propose the rebalance.")
     ],
-    action: () => {
-      task = env.portfolioManager.createTask({
+    action: async () => {
+      task = await createTask(env, {
         intentDigest: env.intent.agentIntentDigest,
         envelopeId: env.envelope.id,
         agent: env.intent.terms.agent
@@ -284,10 +436,10 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
       inputDetail("sourceVault", proposal.sourceVault, "Vault the agent wants to withdraw from."),
       inputDetail("targetVault", proposal.targetVault, "Vault the agent wants to deposit into."),
       inputDetail("amount", formatAmount(proposal.amount), "Turnover this proposal would consume."),
-      inputDetail("proposer", proposer, "Address submitting the proposal.")
+      inputDetail("proposer", displayedProposer, "Address submitting the proposal.")
     ],
-    action: () => {
-      task = env.portfolioManager.submitProposal(task.taskId, proposal, proposer);
+    action: async () => {
+      task = await submitProposal(env, task.taskId, proposal, proposer);
       return task;
     },
     after: (submittedTask) => {
@@ -304,12 +456,9 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
     layer: "PortfolioManager verifier + ERC-8312 cursor",
     intent:
       "The deterministic verifier reads the accepted mandate, the live envelope, the current ExecutionSubstrate allocation, vault metadata, and the cursor headroom. It checks authorization, yield improvement, vault approval, allocation caps, risk-bucket caps, and cumulative turnover before ExecutionSubstrate can execute anything.",
-    details: [
-      inputDetail("currentCursorRoot", env.envelopeRegistry.readCursor(env.envelope.id).cursorRoot, "Live cursor commitment before verification."),
-      inputDetail("remainingTurnover", formatAmount(env.envelopeRegistry.readCursor(env.envelope.id).remainingTurnover), "Unused aggregate turnover headroom.")
-    ],
-    action: () => {
-      task = env.portfolioManager.verifyProposal(task.taskId);
+    details: await cursorVerificationDetails(env),
+    action: async () => {
+      task = await verifyProposal(env, task.taskId);
       return task;
     },
     after: (verifiedTask) => {
@@ -320,7 +469,7 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
       ];
       if (verifiedTask.verification?.approved) {
         outputs.push(
-          outputDetail("yieldImprovement", `${verifiedTask.verification.yieldImprovementBps} bps`, "Yield improvement over the source vault."),
+          outputDetail("yieldImprovement", `${verifiedTask.verification.yieldImprovementBps ?? "onchain checked"} bps`, "Yield improvement over the source vault."),
           outputDetail("turnoverDelta", formatAmount(verifiedTask.verification.turnoverDelta), "Turnover that will be charged to the cursor.")
         );
       }
@@ -336,12 +485,9 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
     intent: task.verification?.approved
       ? "PortfolioManager will hand a verified task to ExecutionSubstrate. ExecutionSubstrate will withdraw from the source vault, deposit into the target vault, and advance the ERC-8312 cursor in the same execution path. If cursor advancement failed, the local simulation would roll back the fund movement."
       : "Because verification rejected the proposal, PortfolioManager will not authorize fund movement. ExecutionSubstrate records a rejection receipt showing the failed check and leaves the allocation and cursor root unchanged.",
-    details: [
-      inputDetail("allocationBefore", compactAllocation(env.executionSubstrate.getAllocationByVault()), "Portfolio state before ExecutionSubstrate action."),
-      inputDetail("cursorRootBefore", env.envelopeRegistry.readCursor(env.envelope.id).cursorRoot, "Cursor commitment that execution must advance from.")
-    ],
-    action: () => {
-      const settled = env.portfolioManager.settleTask(task.taskId);
+    details: await executionDetails(env),
+    action: async () => {
+      const settled = await settleTask(env, task.taskId, task);
       task = settled.task;
       receipt = settled.receipt;
       return receipt;
@@ -363,9 +509,9 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
     layer: "PortfolioManager / ERC-8301 workflow",
     intent:
       "PortfolioManager finalizes successfully executed tasks after receiving an ExecutionSubstrate receipt. Rejected tasks are already terminal at Rejected, which prevents the same proposal from being reused without pretending an execution occurred.",
-    action: () => {
+    action: async () => {
       if (task.status === "Executed") {
-        task = env.portfolioManager.completeTask(task.taskId);
+        task = await completeTask(env, task.taskId);
       }
       return task;
     },
@@ -385,7 +531,7 @@ async function guidedStep({ number, title, layer, intent, details = [], action, 
   printStep(number, title, layer, intent);
   await waitForConfirmation();
   printStepDetails(details);
-  const result = action();
+  const result = await action();
   after?.(result);
   return result;
 }
@@ -455,7 +601,8 @@ function printScenarioIntro({ summary, tests, proves }) {
   console.log("");
 }
 
-function printArchitectureAnchors(env) {
+async function printArchitectureAnchors(env) {
+  const cursor = await readCursor(env);
   console.log("ERC-8001 records authority");
   console.log(`  _agentIntentDigest: ${env.intent.agentIntentDigest}`);
   console.log(`  agreementHash:      ${env.intent.agreementHash}`);
@@ -463,7 +610,7 @@ function printArchitectureAnchors(env) {
   console.log("ERC-8312 meters authority through a live cursor");
   console.log(`  envelopeId:         ${env.envelope.id}`);
   console.log(`  capabilityRoot:     ${env.envelope.capabilityRoot}`);
-  console.log(`  cursorRoot:         ${env.envelopeRegistry.readCursor(env.envelope.id).cursorRoot}`);
+  console.log(`  cursorRoot:         ${cursor.cursorRoot}`);
 }
 
 function printIntent(env) {
@@ -494,8 +641,8 @@ function printEnvelope(env) {
   console.log(`Binds agreement hash: ${envelope.agreementHash}`);
 }
 
-function printCursor(env) {
-  const cursor = env.envelopeRegistry.readCursor(env.envelope.id);
+async function printCursor(env) {
+  const cursor = await readCursor(env);
   console.log("");
   console.log("Cursor state:");
   console.log(`  status: ${cursor.status}`);
@@ -513,8 +660,8 @@ function printCursor(env) {
   }
 }
 
-function printCursorDetailsPanel(env, title) {
-  const cursor = env.envelopeRegistry.readCursor(env.envelope.id);
+async function printCursorDetailsPanel(env, title) {
+  const cursor = await readCursor(env);
   console.log("");
   console.log(color.bold(title));
   console.log("");
@@ -570,16 +717,17 @@ function printCursorDelta(receipt) {
   console.log("");
 }
 
-function printPortfolio(env) {
+async function printPortfolio(env) {
+  const allocation = await readAllocation(env);
   console.log("");
   console.log("Portfolio held by ExecutionSubstrate:");
-  for (const [vaultName, amount] of Object.entries(env.executionSubstrate.getAllocationByVault())) {
+  for (const [vaultName, amount] of Object.entries(allocation)) {
     const vault = env.vaultsByName[vaultName];
-    console.log(`  ${vaultName} (${vault.riskBucket}, ${bpsToPercent(vault.apyBps)} APY): ${formatAmount(amount)}`);
+    console.log(`  ${vaultName} (${vault.riskBucket ?? vault.bucket}, ${bpsToPercent(vault.apyBps)} APY): ${formatAmount(amount)}`);
   }
 }
 
-function printResult(env, { task, receipt }) {
+async function printResult(env, { task, receipt }) {
   console.log("");
   console.log(color.bold("Final result:"));
   console.log("");
@@ -593,8 +741,8 @@ function printResult(env, { task, receipt }) {
   printPlainKeyValue("verification", receipt.verificationResult);
   printPlainKeyValue("receiptHash", receipt.receiptHash);
   printPlainKeyValue("rejectionReason", receipt.rejectionReason ?? "none");
-  printCursor(env);
-  printPortfolio(env);
+  await printCursor(env);
+  await printPortfolio(env);
 }
 
 function printReceipts(env) {
