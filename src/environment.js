@@ -11,11 +11,11 @@ import {
 import { EnvelopeRegistry } from "./cursor.js";
 import { IntentRegistry } from "./mandate.js";
 import { ReceiptStore } from "./receipts.js";
-import { ControlledSubstrate } from "./substrate.js";
+import { ExecutionSubstrate } from "./substrate.js";
 import { MockToken } from "./token.js";
 import { MockVault } from "./vault.js";
 import { MandateVerifier } from "./verifier.js";
-import { RebalanceWorkflow } from "./workflow.js";
+import { PortfolioManager } from "./workflow.js";
 
 export function createDemoEnvironment({ initialTurnover = 0, initialAllocation = INITIAL_ALLOCATION, clockStart = 1_800_000_000 } = {}) {
   let currentTime = clockStart;
@@ -51,12 +51,12 @@ export function createDemoEnvironment({ initialTurnover = 0, initialAllocation =
     initialTurnover
   });
   const receiptStore = new ReceiptStore({ clock });
-  const substrate = new ControlledSubstrate({ token, vaultsByName, intentRegistry, envelopeRegistry, receiptStore });
+  const executionSubstrate = new ExecutionSubstrate({ token, vaultsByName, intentRegistry, envelopeRegistry, receiptStore });
   token.mint(PRINCIPAL, 10_000);
-  substrate.depositFromUser(PRINCIPAL, 10_000);
-  substrate.setInitialAllocation(initialAllocation);
-  const verifier = new MandateVerifier({ intentRegistry, envelopeRegistry, vaultsByName, substrate });
-  const workflow = new RebalanceWorkflow({ verifier, clock });
+  executionSubstrate.depositFromUser(PRINCIPAL, 10_000);
+  executionSubstrate.setInitialAllocation(initialAllocation);
+  const verifier = new MandateVerifier({ intentRegistry, envelopeRegistry, vaultsByName, substrate: executionSubstrate });
+  const portfolioManager = new PortfolioManager({ verifier, executionSubstrate, clock });
 
   return {
     clock,
@@ -66,9 +66,11 @@ export function createDemoEnvironment({ initialTurnover = 0, initialAllocation =
     intentRegistry,
     envelopeRegistry,
     receiptStore,
-    substrate,
+    executionSubstrate,
+    substrate: executionSubstrate,
     verifier,
-    workflow,
+    portfolioManager,
+    workflow: portfolioManager,
     intent: acceptedIntent,
     envelope,
     cursor
@@ -76,20 +78,24 @@ export function createDemoEnvironment({ initialTurnover = 0, initialAllocation =
 }
 
 export function runProposal(environment, proposal, { proposer = AGENT, execute = true } = {}) {
-  const task = environment.workflow.createTask({
+  const manager = environment.portfolioManager ?? environment.workflow;
+  const task = manager.createTask({
     intentDigest: environment.intent.agentIntentDigest,
     envelopeId: environment.envelope.id,
     agent: environment.intent.terms.agent
   });
-  environment.workflow.submitProposal(task.taskId, proposal, proposer);
-  const verifiedTask = environment.workflow.verifyProposal(task.taskId);
-  const receipt = environment.substrate.executeTask(verifiedTask);
-  let finalTask = environment.workflow.getTask(task.taskId);
+  manager.submitProposal(task.taskId, proposal, proposer);
+  const verifiedTask = manager.verifyProposal(task.taskId);
+  let receipt = null;
+  let finalTask = manager.getTask(task.taskId);
   if (verifiedTask.verification?.approved && execute) {
-    environment.workflow.markExecuted(task.taskId);
-    finalTask = environment.workflow.completeTask(task.taskId);
+    const settled = manager.settleTask(task.taskId);
+    receipt = settled.receipt;
+    finalTask = manager.completeTask(task.taskId);
   } else if (finalTask.status === "Rejected") {
-    finalTask = environment.workflow.completeTask(task.taskId);
+    const settled = manager.settleTask(task.taskId);
+    receipt = settled.receipt;
+    finalTask = settled.task;
   }
   return {
     task: finalTask,

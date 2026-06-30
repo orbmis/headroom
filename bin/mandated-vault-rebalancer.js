@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
+import { clearLine, cursorTo, moveCursor } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import {
   AGENT,
@@ -16,6 +17,7 @@ const colorsEnabled = output.isTTY && !process.env.NO_COLOR;
 const color = {
   dim: (value) => applyColor(value, 2),
   cyan: (value) => applyColor(value, 36),
+  pink: (value) => applyColor(value, 35),
   green: (value) => applyColor(value, 32),
   yellow: (value) => applyColor(value, 33),
   red: (value) => applyColor(value, 31),
@@ -67,7 +69,7 @@ async function runHappyPath() {
     tests:
       "It tests a 500 mock USDC move from Vault A to Vault D. The target vault is approved, improves yield by more than the 50 bps threshold, reaches but does not exceed the 30% per-vault cap, and keeps risk-bucket exposure within mandate limits.",
     proves:
-      "It proves that a valid action can execute only after workflow verification, that the controlled substrate moves funds, that the ERC-8312 cursor advances atomically, and that a success receipt records the transition."
+      "It proves that a valid action can execute only after PortfolioManager verification, that ExecutionSubstrate moves funds, that the ERC-8312 cursor advances atomically, and that a success receipt records the transition."
   });
   printArchitectureAnchors(env);
   printPortfolio(env);
@@ -108,7 +110,7 @@ async function runRiskBreach() {
     tests:
       "It tests a 1,500 mock USDC move from Vault A to Vault E. Vault E is approved and offers higher simulated yield, but the resulting Growth plus Experimental exposure would exceed the 60% cap.",
     proves:
-      "It proves that the verifier and substrate enforce portfolio-level risk-bucket limits, not just per-vault checks."
+      "It proves that PortfolioManager verification and ExecutionSubstrate enforcement apply portfolio-level risk-bucket limits, not just per-vault checks."
   });
   printArchitectureAnchors(env);
   const result = await runGuidedProposal(env, {
@@ -131,7 +133,6 @@ async function runTurnoverBreach() {
       "It proves that ERC-8312-style cursor metering catches cumulative mandate exhaustion across actions. The action is rejected, funds do not move, and the cursor root stays unchanged."
   });
   printArchitectureAnchors(env);
-  printCursor(env);
   const result = await runGuidedProposal(env, {
     sourceVault: "Vault A",
     targetVault: "Vault D",
@@ -149,17 +150,18 @@ async function runWorkflowViolation() {
     tests:
       "It creates a task and then attempts to mark execution before any proposal has been submitted or verified.",
     proves:
-      "It proves that execution cannot bypass workflow ordering. The substrate is never invoked, no funds move, and the cursor remains unchanged."
+      "It proves that execution cannot bypass PortfolioManager workflow ordering. ExecutionSubstrate is never invoked, no funds move, and the cursor remains unchanged."
   });
   printArchitectureAnchors(env);
+  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   const task = await guidedStep({
     number: 1,
     title: "Create ERC-8301 task",
-    layer: "ERC-8301 workflow",
+    layer: "PortfolioManager / ERC-8301 workflow",
     intent:
-      "The workflow will create a new rebalance task and bind it to the already accepted mandate and active bounded-action envelope. This establishes the ordered execution context before any agent proposal can be considered.",
+      "PortfolioManager will create a new rebalance task and bind it to the already accepted mandate and active bounded-action envelope. This establishes the ordered execution context before any agent proposal can be considered.",
     action: () =>
-      env.workflow.createTask({
+      env.portfolioManager.createTask({
         intentDigest: env.intent.agentIntentDigest,
         envelopeId: env.envelope.id,
         agent: AGENT
@@ -174,12 +176,12 @@ async function runWorkflowViolation() {
   await guidedStep({
     number: 2,
     title: "Attempt execution before verification",
-    layer: "ERC-8301 workflow",
+    layer: "PortfolioManager / ERC-8301 workflow",
     intent:
-      "The demo will deliberately call the execution transition too early. A correct ERC-8301-shaped workflow must reject this because no proposal has been submitted, no verifier has approved it, and no substrate action is authorized.",
+      "The demo will deliberately call the execution transition too early. PortfolioManager must reject this because no proposal has been submitted, no verifier has approved it, and no ExecutionSubstrate action is authorized.",
     action: () => {
       try {
-        env.workflow.markExecuted(task.taskId);
+        env.portfolioManager.markExecuted(task.taskId);
         return { rejected: false, reason: null };
       } catch (error) {
         return { rejected: true, reason: error.message };
@@ -187,7 +189,7 @@ async function runWorkflowViolation() {
     },
     after: (result) => {
       printOutputTable([
-        outputDetail("layer", "ERC-8301 workflow", "Layer that rejected the invalid transition."),
+        outputDetail("layer", "PortfolioManager / ERC-8301 workflow", "Layer that rejected the invalid transition."),
         outputDetail("actionResult", result.rejected ? "rejected" : "accepted", "Whether the premature execution was allowed."),
         outputDetail("rejectionReason", result.reason ?? "none", "Workflow ordering failure returned by the state machine.")
       ]);
@@ -227,7 +229,7 @@ function inspectCursor() {
 
 function inspectPortfolio() {
   const env = createDemoEnvironment();
-  printHeader("Controlled substrate portfolio");
+  printHeader("ExecutionSubstrate portfolio");
   printPortfolio(env);
 }
 
@@ -243,20 +245,21 @@ function inspectReceipts() {
 }
 
 async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
+  printCursorDetailsPanel(env, "ERC-8312 cursor before workflow");
   let task;
   await guidedStep({
     number: 1,
     title: "Create task",
-    layer: "ERC-8301 workflow",
+    layer: "PortfolioManager / ERC-8301 workflow",
     intent:
-      "The workflow opens a new task for this rebalance attempt. The task records which accepted ERC-8001 mandate and which ERC-8312 envelope the agent must operate under, so later steps cannot float free of the authority and cursor state.",
+      "PortfolioManager opens a new task for this rebalance attempt. The task records which accepted ERC-8001 mandate and which ERC-8312 envelope the agent must operate under, so later steps cannot float free of the authority and cursor state.",
     details: [
       inputDetail("intentDigest", env.intent.agentIntentDigest, "ERC-8001 authority anchor for this accepted mandate."),
       inputDetail("envelopeId", env.envelope.id, "ERC-8312 envelope that meters the mandate."),
       inputDetail("agent", env.intent.terms.agent, "Accepted agent allowed to propose the rebalance.")
     ],
     action: () => {
-      task = env.workflow.createTask({
+      task = env.portfolioManager.createTask({
         intentDigest: env.intent.agentIntentDigest,
         envelopeId: env.envelope.id,
         agent: env.intent.terms.agent
@@ -274,7 +277,7 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
   await guidedStep({
     number: 2,
     title: "Submit agent proposal",
-    layer: "ERC-8301 workflow",
+    layer: "PortfolioManager / ERC-8301 workflow",
     intent:
       "The agent submits the concrete rebalance it wants to perform: source vault, target vault, amount, and proposer identity. This records intent to act, but it still does not authorize movement of funds.",
     details: [
@@ -284,7 +287,7 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
       inputDetail("proposer", proposer, "Address submitting the proposal.")
     ],
     action: () => {
-      task = env.workflow.submitProposal(task.taskId, proposal, proposer);
+      task = env.portfolioManager.submitProposal(task.taskId, proposal, proposer);
       return task;
     },
     after: (submittedTask) => {
@@ -298,15 +301,15 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
   await guidedStep({
     number: 3,
     title: "Verify mandate and cursor",
-    layer: "Verifier + ERC-8312 cursor",
+    layer: "PortfolioManager verifier + ERC-8312 cursor",
     intent:
-      "The deterministic verifier reads the accepted mandate, the live envelope, the current substrate allocation, vault metadata, and the cursor headroom. It checks authorization, yield improvement, vault approval, allocation caps, risk-bucket caps, and cumulative turnover before the substrate can execute anything.",
+      "The deterministic verifier reads the accepted mandate, the live envelope, the current ExecutionSubstrate allocation, vault metadata, and the cursor headroom. It checks authorization, yield improvement, vault approval, allocation caps, risk-bucket caps, and cumulative turnover before ExecutionSubstrate can execute anything.",
     details: [
       inputDetail("currentCursorRoot", env.envelopeRegistry.readCursor(env.envelope.id).cursorRoot, "Live cursor commitment before verification."),
       inputDetail("remainingTurnover", formatAmount(env.envelopeRegistry.readCursor(env.envelope.id).remainingTurnover), "Unused aggregate turnover headroom.")
     ],
     action: () => {
-      task = env.workflow.verifyProposal(task.taskId);
+      task = env.portfolioManager.verifyProposal(task.taskId);
       return task;
     },
     after: (verifiedTask) => {
@@ -329,16 +332,18 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
   await guidedStep({
     number: 4,
     title: task.verification?.approved ? "Execute and advance cursor" : "Record rejection receipt",
-    layer: "Controlled substrate",
+    layer: "ExecutionSubstrate",
     intent: task.verification?.approved
-      ? "The substrate will withdraw from the source vault, deposit into the target vault, and advance the ERC-8312 cursor in the same execution path. If cursor advancement failed, the local simulation would roll back the fund movement."
-      : "Because verification rejected the proposal, the substrate will not withdraw or deposit funds. It will record a rejection receipt showing the failed check and leave the allocation and cursor root unchanged.",
+      ? "PortfolioManager will hand a verified task to ExecutionSubstrate. ExecutionSubstrate will withdraw from the source vault, deposit into the target vault, and advance the ERC-8312 cursor in the same execution path. If cursor advancement failed, the local simulation would roll back the fund movement."
+      : "Because verification rejected the proposal, PortfolioManager will not authorize fund movement. ExecutionSubstrate records a rejection receipt showing the failed check and leaves the allocation and cursor root unchanged.",
     details: [
-      inputDetail("allocationBefore", compactAllocation(env.substrate.getAllocationByVault()), "Portfolio state before substrate action."),
+      inputDetail("allocationBefore", compactAllocation(env.executionSubstrate.getAllocationByVault()), "Portfolio state before ExecutionSubstrate action."),
       inputDetail("cursorRootBefore", env.envelopeRegistry.readCursor(env.envelope.id).cursorRoot, "Cursor commitment that execution must advance from.")
     ],
     action: () => {
-      receipt = env.substrate.executeTask(task);
+      const settled = env.portfolioManager.settleTask(task.taskId);
+      task = settled.task;
+      receipt = settled.receipt;
       return receipt;
     },
     after: (storedReceipt) => {
@@ -348,27 +353,27 @@ async function runGuidedProposal(env, proposal, { proposer = AGENT } = {}) {
         outputDetail("rejectionReason", storedReceipt.rejectionReason ?? "none", "Reason recorded when execution was rejected."),
         outputDetail("cursorAdvanced", storedReceipt.cursorAfter ? "yes" : "no", "Whether ERC-8312 cursor state changed.")
       ]);
+      printCursorDelta(storedReceipt);
     }
   });
 
   await guidedStep({
     number: 5,
     title: "Resolve workflow task",
-    layer: "ERC-8301 workflow",
+    layer: "PortfolioManager / ERC-8301 workflow",
     intent:
-      "The workflow finalizes the task after there is evidence of either execution or rejection. This prevents the same proposal from being reused and gives the attempt a clear terminal status.",
+      "PortfolioManager finalizes successfully executed tasks after receiving an ExecutionSubstrate receipt. Rejected tasks are already terminal at Rejected, which prevents the same proposal from being reused without pretending an execution occurred.",
     action: () => {
-      if (task.verification?.approved) {
-        task = env.workflow.markExecuted(task.taskId);
+      if (task.status === "Executed") {
+        task = env.portfolioManager.completeTask(task.taskId);
       }
-      task = env.workflow.completeTask(task.taskId);
       return task;
     },
     after: (finalTask) => {
       printOutputTable([
         outputDetail("finalStatus", finalTask.status, "Terminal workflow status for this task."),
-        outputDetail("verificationStatus", finalTask.verificationStatus, "Verifier result retained on the completed task."),
-        outputDetail("completedAt", finalTask.completedAt, "Demo timestamp when the task completed.")
+        outputDetail("verificationStatus", finalTask.verificationStatus, "Verifier result retained on the terminal task."),
+        outputDetail("completedAt", finalTask.completedAt, "Demo timestamp for completed successful tasks; null for rejected terminal tasks.")
       ]);
     }
   });
@@ -387,7 +392,7 @@ async function guidedStep({ number, title, layer, intent, details = [], action, 
 
 function printStep(number, title, layer, intent) {
   console.log("");
-  console.log(color.cyan(`-- Step ${number}: ${title} --`));
+  console.log(color.pink(`-- Step ${number}: ${title} --`));
   console.log("");
   console.log(`Layer: ${color.bold(layer)}`);
   console.log("");
@@ -412,10 +417,20 @@ async function waitForConfirmation() {
   const readline = createInterface({ input, output });
   const answer = await readline.question("Press Enter to continue, or type n to stop: ");
   readline.close();
+  clearPromptLine();
   if (answer.trim().toLowerCase() === "n") {
     console.log("Stopped before executing this step.");
     process.exit(0);
   }
+}
+
+function clearPromptLine() {
+  if (!output.isTTY) {
+    return;
+  }
+  moveCursor(output, 0, -1);
+  clearLine(output, 0);
+  cursorTo(output, 0);
 }
 
 function printHeader(title) {
@@ -444,6 +459,7 @@ function printArchitectureAnchors(env) {
   console.log("ERC-8001 records authority");
   console.log(`  _agentIntentDigest: ${env.intent.agentIntentDigest}`);
   console.log(`  agreementHash:      ${env.intent.agreementHash}`);
+  console.log("");
   console.log("ERC-8312 meters authority through a live cursor");
   console.log(`  envelopeId:         ${env.envelope.id}`);
   console.log(`  capabilityRoot:     ${env.envelope.capabilityRoot}`);
@@ -497,10 +513,67 @@ function printCursor(env) {
   }
 }
 
+function printCursorDetailsPanel(env, title) {
+  const cursor = env.envelopeRegistry.readCursor(env.envelope.id);
+  console.log("");
+  console.log(color.bold(title));
+  console.log("");
+  printDetailTable([
+    inputDetail("status", cursor.status, "Lifecycle status exposed by the cursor."),
+    inputDetail("isActive", cursor.isActive ? "yes" : "no", "Whether the bound envelope is active and unexpired."),
+    inputDetail("cursorRoot", cursor.cursorRoot, "Commitment to the current cursor state."),
+    inputDetail("portfolioValue", formatAmount(cursor.portfolioValue), "Total mock USDC tracked by the cursor."),
+    inputDetail("cumulativeTurnover", `${formatAmount(cursor.cumulativeTurnover)} / ${formatAmount(cursor.maxCumulativeTurnover)}`, "Aggregate turnover consumed under the mandate."),
+    inputDetail("remainingTurnover", formatAmount(cursor.remainingTurnover), "Turnover headroom still available to the agent."),
+    inputDetail("lastRebalanceSequence", cursor.lastRebalanceSequence, "Ordering marker for successful cursor advances."),
+    inputDetail("expiresAt", cursor.expiresAt, "Expiry inherited from the accepted mandate.")
+  ]);
+
+  console.log("");
+  console.log(color.bold("Cursor allocation by vault"));
+  console.log("");
+  printDetailTable(
+    Object.entries(cursor.allocationByVault).map(([vault, amount]) =>
+      inputDetail(vault, formatAmount(amount), "Current allocation committed by the cursor.")
+    )
+  );
+
+  console.log("");
+  console.log(color.bold("Cursor risk exposure"));
+  console.log("");
+  printDetailTable(
+    Object.entries(cursor.allocationByRiskBucket).map(([bucket, amount]) =>
+      inputDetail(bucket, formatAmount(amount), "Current risk-bucket exposure committed by the cursor.")
+    )
+  );
+  console.log("");
+}
+
+function printCursorDelta(receipt) {
+  const before = receipt.cursorBefore;
+  const after = receipt.cursorAfter ?? receipt.cursorBefore;
+  const advanced = Boolean(receipt.cursorAfter);
+  console.log("");
+  console.log(color.bold("ERC-8312 cursor delta"));
+  console.log("");
+  printDetailTable([
+    inputDetail("cursorRootBefore", before.cursorRoot, "Cursor commitment before ExecutionSubstrate handling."),
+    inputDetail("cursorRootAfter", advanced ? after.cursorRoot : `${after.cursorRoot} (unchanged)`, "Cursor commitment after ExecutionSubstrate handling."),
+    inputDetail("turnoverBefore", formatAmount(before.cumulativeTurnover), "Cumulative turnover before this attempt."),
+    inputDetail("turnoverAfter", advanced ? formatAmount(after.cumulativeTurnover) : `${formatAmount(after.cumulativeTurnover)} (unchanged)`, "Cumulative turnover after this attempt."),
+    inputDetail("remainingBefore", formatAmount(before.remainingTurnover), "Remaining turnover before this attempt."),
+    inputDetail("remainingAfter", advanced ? formatAmount(after.remainingTurnover) : `${formatAmount(after.remainingTurnover)} (unchanged)`, "Remaining turnover after this attempt."),
+    inputDetail("sequenceBefore", before.lastRebalanceSequence, "Cursor sequence before this attempt."),
+    inputDetail("sequenceAfter", advanced ? after.lastRebalanceSequence : `${after.lastRebalanceSequence} (unchanged)`, "Cursor sequence after this attempt."),
+    inputDetail("advanced", advanced ? "yes" : "no", "Whether the ERC-8312 registry accepted a cursor advance.")
+  ]);
+  console.log("");
+}
+
 function printPortfolio(env) {
   console.log("");
-  console.log("Portfolio held by controlled substrate:");
-  for (const [vaultName, amount] of Object.entries(env.substrate.getAllocationByVault())) {
+  console.log("Portfolio held by ExecutionSubstrate:");
+  for (const [vaultName, amount] of Object.entries(env.executionSubstrate.getAllocationByVault())) {
     const vault = env.vaultsByName[vaultName];
     console.log(`  ${vaultName} (${vault.riskBucket}, ${bpsToPercent(vault.apyBps)} APY): ${formatAmount(amount)}`);
   }
@@ -510,7 +583,7 @@ function printResult(env, { task, receipt }) {
   console.log("");
   console.log(color.bold("Final result:"));
   console.log("");
-  console.log("ERC-8301 workflow:");
+  console.log("PortfolioManager workflow:");
   printPlainKeyValue("taskId", task.taskId);
   printPlainKeyValue("status", task.status);
   printPlainKeyValue("verificationStatus", task.verificationStatus);
@@ -545,7 +618,7 @@ Commands:
   create-mandate        show the ERC-8001-shaped mandate and hashes
   accept-mandate        show the accepted mandate state
   create-envelope       show the ERC-8312 envelope bound to the mandate
-  deposit               show the controlled substrate after mock USDC deposit
+  deposit               show ExecutionSubstrate after mock USDC deposit
   allocate-initial      show initial vault allocation
   inspect:intent        inspect accepted intent
   inspect:envelope      inspect envelope

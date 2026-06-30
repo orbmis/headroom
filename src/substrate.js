@@ -2,7 +2,7 @@ import { SUBSTRATE_ADDRESS } from "./constants.js";
 import { DomainError, assertCondition } from "./utils.js";
 import { VerificationStatus } from "./verifier.js";
 
-export class ControlledSubstrate {
+export class ExecutionSubstrate {
   constructor({ token, vaultsByName, intentRegistry, envelopeRegistry, receiptStore }) {
     this.token = token;
     this.vaultsByName = vaultsByName;
@@ -34,29 +34,37 @@ export class ControlledSubstrate {
     );
   }
 
-  executeTask(task) {
+  executeVerifiedRebalance(task, authorization) {
+    this.#assertPortfolioManagerAuthorization(task, authorization, "execute");
+    assertCondition(
+      task.verificationStatus === VerificationStatus.APPROVED && task.verification?.approved,
+      "SUBSTRATE_UNVERIFIED_WORKFLOW",
+      "ExecutionSubstrate requires a verified PortfolioManager task"
+    );
+    return this.#executeApprovedTask(task);
+  }
+
+  recordRejectedAttempt(task, authorization) {
+    this.#assertPortfolioManagerAuthorization(task, authorization, "record-rejection");
+    assertCondition(
+      task.verificationStatus === VerificationStatus.REJECTED || task.status === "Rejected",
+      "SUBSTRATE_REJECTION_RECEIPT_FOR_ACTIVE_TASK",
+      "ExecutionSubstrate only records rejection receipts for rejected workflow tasks"
+    );
+    return this.#recordRejectedReceipt(task, task.rejectionReason ?? task.verification?.rejectionReason ?? "proposal was not approved");
+  }
+
+  executeTask(task, authorization) {
+    if (task.verificationStatus === VerificationStatus.APPROVED && task.verification?.approved) {
+      return this.executeVerifiedRebalance(task, authorization);
+    }
+    return this.recordRejectedAttempt(task, authorization);
+  }
+
+  #executeApprovedTask(task) {
     const intent = this.intentRegistry.getIntent(task.intentDigest);
     const cursorBefore = this.envelopeRegistry.readCursor(task.envelopeId);
     const allocationBefore = this.getAllocationByVault();
-
-    if (task.verificationStatus !== VerificationStatus.APPROVED || !task.verification?.approved) {
-      return this.receiptStore.record({
-        taskId: task.taskId,
-        intentDigest: task.intentDigest,
-        agreementHash: intent.agreementHash,
-        envelopeId: task.envelopeId,
-        sourceVault: task.proposal?.sourceVault ?? null,
-        targetVault: task.proposal?.targetVault ?? null,
-        amount: task.proposal?.amount ?? null,
-        verificationResult: VerificationStatus.REJECTED,
-        rejectionReason: task.rejectionReason ?? task.verification?.rejectionReason ?? "proposal was not approved",
-        cursorBefore,
-        cursorAfter: null,
-        allocationBefore,
-        allocationAfter: null,
-        workflowStatus: task.status
-      });
-    }
 
     const tokenSnapshot = this.token.snapshot();
     const vaultSnapshots = Object.fromEntries(Object.entries(this.vaultsByName).map(([name, vault]) => [name, vault.snapshot()]));
@@ -96,23 +104,42 @@ export class ControlledSubstrate {
       }
       this.envelopeRegistry.restore(envelopeSnapshot);
       const reason = error instanceof DomainError ? error.message : `execution failed: ${error.message}`;
-      return this.receiptStore.record({
-        taskId: task.taskId,
-        intentDigest: task.intentDigest,
-        agreementHash: intent.agreementHash,
-        envelopeId: task.envelopeId,
-        sourceVault: task.proposal.sourceVault,
-        targetVault: task.proposal.targetVault,
-        amount: task.proposal.amount,
-        verificationResult: VerificationStatus.REJECTED,
-        rejectionReason: reason,
-        cursorBefore,
-        cursorAfter: null,
-        allocationBefore,
-        allocationAfter: null,
-        workflowStatus: "Rejected"
-      });
+      return this.#recordRejectedReceipt(task, reason, { cursorBefore, allocationBefore });
     }
+  }
+
+  #recordRejectedReceipt(task, rejectionReason, state = {}) {
+    const intent = this.intentRegistry.getIntent(task.intentDigest);
+    const cursorBefore = state.cursorBefore ?? this.envelopeRegistry.readCursor(task.envelopeId);
+    const allocationBefore = state.allocationBefore ?? this.getAllocationByVault();
+    return this.receiptStore.record({
+      taskId: task.taskId,
+      intentDigest: task.intentDigest,
+      agreementHash: intent.agreementHash,
+      envelopeId: task.envelopeId,
+      sourceVault: task.proposal?.sourceVault ?? null,
+      targetVault: task.proposal?.targetVault ?? null,
+      amount: task.proposal?.amount ?? null,
+      verificationResult: VerificationStatus.REJECTED,
+      rejectionReason,
+      cursorBefore,
+      cursorAfter: null,
+      allocationBefore,
+      allocationAfter: null,
+      workflowStatus: "Rejected"
+    });
+  }
+
+  #assertPortfolioManagerAuthorization(task, authorization, action) {
+    assertCondition(
+      authorization?.issuedBy === "PortfolioManager" &&
+        authorization.action === action &&
+        authorization.taskId === task.taskId &&
+        authorization.proposalHash === task.proposalHash &&
+        authorization.status === task.status,
+      "SUBSTRATE_MISSING_WORKFLOW_AUTHORIZATION",
+      "ExecutionSubstrate requires valid PortfolioManager authorization"
+    );
   }
 
   #getVault(vaultName) {
@@ -121,3 +148,5 @@ export class ControlledSubstrate {
     return vault;
   }
 }
+
+export const ControlledSubstrate = ExecutionSubstrate;

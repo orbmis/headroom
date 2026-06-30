@@ -69,7 +69,7 @@ test("ERC-8312-shaped cursor initializes, advances, and keeps root consistency",
 test("ERC-8312-shaped cursor rejects insufficient headroom and leaves state unchanged", () => {
   const env = createDemoEnvironment({ initialTurnover: 7700 });
   const beforeCursor = env.envelopeRegistry.readCursor(env.envelope.id);
-  const beforeAllocation = env.substrate.getAllocationByVault();
+  const beforeAllocation = env.executionSubstrate.getAllocationByVault();
 
   const { receipt } = runProposal(env, {
     sourceVault: "Vault A",
@@ -80,7 +80,7 @@ test("ERC-8312-shaped cursor rejects insufficient headroom and leaves state unch
   assert.equal(receipt.verificationResult, "Rejected");
   assert.equal(receipt.rejectionReason, "proposed turnover exceeds remaining ERC-8312 cursor headroom");
   assert.deepEqual(env.envelopeRegistry.readCursor(env.envelope.id), beforeCursor);
-  assert.deepEqual(env.substrate.getAllocationByVault(), beforeAllocation);
+  assert.deepEqual(env.executionSubstrate.getAllocationByVault(), beforeAllocation);
 });
 
 test("ERC-8312-shaped envelope expiry and revocation are enforced", () => {
@@ -111,16 +111,16 @@ test("mock token and ERC-4626-style vaults support mint, deposit, withdraw, and 
   const vaultA = env.vaultsByName["Vault A"];
 
   assert.equal(env.token.balanceOf(PRINCIPAL), 0);
-  assert.equal(vaultA.balanceOf(env.substrate.address), 2500);
-  vaultA.withdraw(env.substrate.address, 100);
-  assert.equal(vaultA.balanceOf(env.substrate.address), 2400);
-  vaultA.deposit(env.substrate.address, 100);
-  assert.equal(vaultA.balanceOf(env.substrate.address), 2500);
+  assert.equal(vaultA.balanceOf(env.executionSubstrate.address), 2500);
+  vaultA.withdraw(env.executionSubstrate.address, 100);
+  assert.equal(vaultA.balanceOf(env.executionSubstrate.address), 2400);
+  vaultA.deposit(env.executionSubstrate.address, 100);
+  assert.equal(vaultA.balanceOf(env.executionSubstrate.address), 2500);
   vaultA.setApyBps(450);
   assert.equal(vaultA.apyBps, 450);
 });
 
-test("controlled substrate executes a valid rebalance and advances cursor", () => {
+test("ExecutionSubstrate executes a valid rebalance through PortfolioManager and advances cursor", () => {
   const env = createDemoEnvironment();
   const { task, receipt } = runProposal(env, {
     sourceVault: "Vault A",
@@ -130,14 +130,14 @@ test("controlled substrate executes a valid rebalance and advances cursor", () =
 
   assert.equal(task.status, "Completed");
   assert.equal(receipt.verificationResult, "Approved");
-  assert.equal(env.substrate.getAllocationByVault()["Vault A"], 2000);
-  assert.equal(env.substrate.getAllocationByVault()["Vault D"], 3000);
+  assert.equal(env.executionSubstrate.getAllocationByVault()["Vault A"], 2000);
+  assert.equal(env.executionSubstrate.getAllocationByVault()["Vault D"], 3000);
   assert.equal(env.envelopeRegistry.readCursor(env.envelope.id).cumulativeTurnover, 500);
 });
 
 test("per-vault cap violation is rejected with no movement and no cursor advancement", () => {
   const env = createDemoEnvironment();
-  const beforeAllocation = env.substrate.getAllocationByVault();
+  const beforeAllocation = env.executionSubstrate.getAllocationByVault();
   const beforeCursor = env.envelopeRegistry.readCursor(env.envelope.id);
 
   const { receipt } = runProposal(env, {
@@ -148,7 +148,7 @@ test("per-vault cap violation is rejected with no movement and no cursor advance
 
   assert.equal(receipt.verificationResult, "Rejected");
   assert.equal(receipt.rejectionReason, "resulting allocation exceeds max per-vault allocation");
-  assert.deepEqual(env.substrate.getAllocationByVault(), beforeAllocation);
+  assert.deepEqual(env.executionSubstrate.getAllocationByVault(), beforeAllocation);
   assert.deepEqual(env.envelopeRegistry.readCursor(env.envelope.id), beforeCursor);
 });
 
@@ -222,19 +222,19 @@ test("invalid source and target vaults are rejected", () => {
   assert.equal(badTarget.receipt.rejectionReason, "target vault is not approved");
 });
 
-test("ERC-8301-shaped workflow enforces creation, proposal, verification, execution, completion, and rejection ordering", () => {
+test("PortfolioManager enforces creation, proposal, verification, execution, completion, and rejection ordering", () => {
   const env = createDemoEnvironment();
-  const task = env.workflow.createTask({
+  const task = env.portfolioManager.createTask({
     intentDigest: env.intent.agentIntentDigest,
     envelopeId: env.envelope.id,
     agent: AGENT
   });
 
   assert.equal(task.status, "TaskCreated");
-  assert.throws(() => env.workflow.markExecuted(task.taskId), /cannot execute before successful verification/);
-  assert.throws(() => env.workflow.completeTask(task.taskId), /task can only complete after execution or rejection/);
+  assert.throws(() => env.portfolioManager.markExecuted(task.taskId), /cannot execute before successful verification/);
+  assert.throws(() => env.portfolioManager.completeTask(task.taskId), /task can only complete after execution or rejection/);
 
-  env.workflow.submitProposal(
+  env.portfolioManager.submitProposal(
     task.taskId,
     {
       sourceVault: "Vault A",
@@ -243,14 +243,19 @@ test("ERC-8301-shaped workflow enforces creation, proposal, verification, execut
     },
     AGENT
   );
-  const verified = env.workflow.verifyProposal(task.taskId);
+  const verified = env.portfolioManager.verifyProposal(task.taskId);
   assert.equal(verified.status, "Verified");
-  env.workflow.markExecuted(task.taskId);
-  const completed = env.workflow.completeTask(task.taskId);
+  assert.throws(
+    () => env.portfolioManager.markExecuted(task.taskId),
+    /execution must be settled through ExecutionSubstrate/
+  );
+  const settled = env.portfolioManager.settleTask(task.taskId);
+  assert.equal(settled.task.status, "Executed");
+  const completed = env.portfolioManager.completeTask(task.taskId);
   assert.equal(completed.status, "Completed");
   assert.throws(
     () =>
-      env.workflow.submitProposal(
+      env.portfolioManager.submitProposal(
         task.taskId,
         {
           sourceVault: "Vault A",
@@ -271,8 +276,72 @@ test("resolved rejected proposal cannot be reused", () => {
     amount: 700
   });
 
-  assert.equal(task.status, "Completed");
-  assert.throws(() => env.workflow.markExecuted(task.taskId), /cannot execute before successful verification/);
+  assert.equal(task.status, "Rejected");
+  assert.throws(() => env.portfolioManager.markExecuted(task.taskId), /cannot execute before successful verification/);
+});
+
+test("PortfolioManager verification alone does not mutate vault balances or cursor", () => {
+  const env = createDemoEnvironment();
+  const beforeAllocation = env.executionSubstrate.getAllocationByVault();
+  const beforeCursor = env.envelopeRegistry.readCursor(env.envelope.id);
+  const task = env.portfolioManager.createTask({
+    intentDigest: env.intent.agentIntentDigest,
+    envelopeId: env.envelope.id,
+    agent: AGENT
+  });
+
+  env.portfolioManager.submitProposal(
+    task.taskId,
+    {
+      sourceVault: "Vault A",
+      targetVault: "Vault D",
+      amount: 500
+    },
+    AGENT
+  );
+  const verified = env.portfolioManager.verifyProposal(task.taskId);
+
+  assert.equal(verified.status, "Verified");
+  assert.deepEqual(env.executionSubstrate.getAllocationByVault(), beforeAllocation);
+  assert.deepEqual(env.envelopeRegistry.readCursor(env.envelope.id), beforeCursor);
+});
+
+test("agent cannot bypass PortfolioManager and force ExecutionSubstrate rebalance directly", () => {
+  const env = createDemoEnvironment();
+  const beforeAllocation = env.executionSubstrate.getAllocationByVault();
+  const beforeCursor = env.envelopeRegistry.readCursor(env.envelope.id);
+  const task = env.portfolioManager.createTask({
+    intentDigest: env.intent.agentIntentDigest,
+    envelopeId: env.envelope.id,
+    agent: AGENT
+  });
+
+  env.portfolioManager.submitProposal(
+    task.taskId,
+    {
+      sourceVault: "Vault A",
+      targetVault: "Vault D",
+      amount: 500
+    },
+    AGENT
+  );
+  const verified = env.portfolioManager.verifyProposal(task.taskId);
+
+  assert.throws(
+    () => env.executionSubstrate.executeVerifiedRebalance(verified),
+    /requires valid PortfolioManager authorization/
+  );
+  assert.deepEqual(env.executionSubstrate.getAllocationByVault(), beforeAllocation);
+  assert.deepEqual(env.envelopeRegistry.readCursor(env.envelope.id), beforeCursor);
+});
+
+test("ExecutionSubstrate does not own the ERC-8301 workflow lifecycle", () => {
+  const env = createDemoEnvironment();
+
+  assert.equal(env.executionSubstrate.createTask, undefined);
+  assert.equal(env.executionSubstrate.submitProposal, undefined);
+  assert.equal(env.executionSubstrate.verifyProposal, undefined);
+  assert.equal(env.executionSubstrate.completeTask, undefined);
 });
 
 test("receipts are created for successful and rejected attempts with before and after state", () => {

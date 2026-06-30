@@ -22,25 +22,49 @@ Control: the ERC-8312-shaped cursor tracks cumulative turnover and remaining hea
 
 Threat: an agent reuses a resolved proposal or acts from stale task state.
 
-Control: the workflow tracks task status and `resolved`; resolved proposals cannot be resubmitted or executed through the normal path.
+Control: PortfolioManager tracks task status and `resolved`; resolved proposals cannot be resubmitted or executed through the normal path.
+
+## Agent Bypasses PortfolioManager
+
+Threat: an agent tries to avoid the ERC-8301-shaped workflow and force a rebalance directly.
+
+Control: the agent can only submit proposals to PortfolioManager in the demo flow. ExecutionSubstrate rejects direct execution unless it receives valid PortfolioManager authorization for the exact task, proposal hash, action, and workflow status.
+
+## Agent Calls ExecutionSubstrate Directly
+
+Threat: an agent obtains a verified-looking task object and calls the asset holder directly.
+
+Control: ExecutionSubstrate requires a PortfolioManager-issued authorization object. Tests prove that direct `executeVerifiedRebalance` calls without this authorization fail, leaving allocation and cursor state unchanged.
+
+## Invalid PortfolioManager Transition
+
+Threat: PortfolioManager is asked to complete, execute, or settle a task out of order.
+
+Control: PortfolioManager rejects execution before verification, settlement before verification or rejection, completion before execution or rejection, and duplicate proposal submission after resolution.
 
 ## Execute Without Verification
 
 Threat: an agent attempts to skip directly to execution.
 
-Control: `markExecuted` requires `Verified` status. The demo scenario shows the step violation rejection.
+Control: PortfolioManager execution settlement requires `Verified` status and is routed through ExecutionSubstrate. Direct `markExecuted` calls reject even for verified tasks, so workflow state cannot be marked executed merely because a task object exists. The demo scenario shows the step violation rejection.
+
+## ExecutionSubstrate Executes Without Workflow Authorization
+
+Threat: the asset holder executes a rebalance without a valid workflow state.
+
+Control: ExecutionSubstrate rejects execution without PortfolioManager authorization. In production this boundary would be enforced with contract-level access control and account routing rather than an in-memory object.
 
 ## Cursor Advancement Without Execution
 
 Threat: an attacker advances the cursor to consume headroom without moving funds.
 
-Control in PoC: cursor advancement is only called by the controlled substrate execution path, and the witness must bind to the current cursor root. In production this would need contract-level authorization and non-bypassable account routing.
+Control in PoC: cursor advancement is only called by the ExecutionSubstrate execution path, and the witness must bind to the current cursor root. In production this would need contract-level authorization and non-bypassable account routing.
 
 ## Execution Without Cursor Advancement
 
 Threat: funds move but aggregate state is not metered.
 
-Control in PoC: substrate execution and cursor advancement are tied together with rollback semantics. If cursor advancement fails, token, vault, and envelope state are restored.
+Control in PoC: ExecutionSubstrate execution and cursor advancement are tied together with rollback semantics. If cursor advancement fails, token, vault, and envelope state are restored.
 
 ## Expired Mandate
 
