@@ -4,3 +4,5 @@ artifacts/
 cache/
 deployments/*.json
 !deployments/.gitkeep
+.env
+!.env.example
