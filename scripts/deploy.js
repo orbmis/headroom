@@ -24,26 +24,92 @@ function log(message) {
   console.log(message);
 }
 
-async function wait(label, txPromise) {
-  const tx = await txPromise;
+const CONFIRMATIONS = Number(process.env.DEPLOY_CONFIRMATIONS ?? 2);
+const MAX_ATTEMPTS = Number(process.env.DEPLOY_RETRIES ?? 5);
+const RETRY_DELAY_MS = Number(process.env.DEPLOY_RETRY_DELAY_MS ?? 4000);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Public RPCs (e.g. sepolia.base.org) load-balance across backends that lag one
+// another, so a read/estimate issued right after a write can land on a node that
+// has not yet seen the block and revert as if the state does not exist. Treat
+// those, plus ordinary network hiccups, as transient and worth retrying.
+function isTransient(error) {
+  const message = (
+    error?.info?.error?.message ??
+    error?.shortMessage ??
+    error?.message ??
+    ""
+  ).toLowerCase();
+  const code = error?.code;
+  return (
+    message.includes("mandate_not_found") ||
+    message.includes("envelope_not_found") ||
+    message.includes("not found") ||
+    message.includes("missing revert data") ||
+    message.includes("could not coalesce") ||
+    message.includes("header not found") ||
+    message.includes("timeout") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up") ||
+    message.includes("bad gateway") ||
+    message.includes("service unavailable") ||
+    message.includes("server error") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    code === "NETWORK_ERROR" ||
+    code === "SERVER_ERROR" ||
+    code === "TIMEOUT"
+  );
+}
+
+// Retries a thunk that has NOT yet broadcast a transaction (a read, a
+// staticCall, or a send whose gas estimation may revert against a stale node).
+// Safe to re-run because every retried failure happens before anything reaches
+// the mempool. Do not use this to wrap receipt waiting — see wait().
+async function withRetry(label, thunk) {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await thunk();
+    } catch (error) {
+      lastError = error;
+      if (!isTransient(error) || attempt === MAX_ATTEMPTS) {
+        throw error;
+      }
+      log(`  ${label}: transient RPC failure on attempt ${attempt}/${MAX_ATTEMPTS}; retrying in ${RETRY_DELAY_MS}ms`);
+      log(`    reason: ${error?.shortMessage ?? error?.message ?? error}`);
+      await sleep(RETRY_DELAY_MS);
+    }
+  }
+  throw lastError;
+}
+
+async function wait(label, sendTx) {
+  // Retry only the send (gas estimation + broadcast). Once we hold a tx hash the
+  // transaction is in flight, so wait for the receipt OUTSIDE the retry loop to
+  // avoid ever broadcasting the same call twice.
+  const tx = await withRetry(label, sendTx);
   log(`Submitting transaction: ${label}`);
   log(`  tx: ${tx.hash}`);
-  log("  waiting for inclusion...");
-  const receipt = await tx.wait();
+  log(`  waiting for ${CONFIRMATIONS} confirmation(s)...`);
+  const receipt = await tx.wait(CONFIRMATIONS);
   log(`Included in block: ${receipt.blockNumber}`);
   log(`  gas used: ${receipt.gasUsed.toString()}`);
   return receipt;
 }
 
 async function deploy(name, args = []) {
-  const contract = await ethers.deployContract(name, args);
-  log(`Deploying ${name}`);
-  log(`  tx: ${contract.deploymentTransaction().hash}`);
-  await contract.waitForDeployment();
-  const receipt = await contract.deploymentTransaction().wait();
-  log(`  address: ${contract.target}`);
-  log(`  block: ${receipt.blockNumber}`);
-  return contract;
+  return withRetry(`deploy ${name}`, async () => {
+    const contract = await ethers.deployContract(name, args);
+    log(`Deploying ${name}`);
+    log(`  tx: ${contract.deploymentTransaction().hash}`);
+    await contract.waitForDeployment();
+    const receipt = await contract.deploymentTransaction().wait(CONFIRMATIONS);
+    log(`  address: ${contract.target}`);
+    log(`  block: ${receipt.blockNumber}`);
+    return contract;
+  });
 }
 
 const token = await deploy("MockUSDC");
@@ -52,14 +118,14 @@ const envelopeRegistry = await deploy("EnvelopeRegistry", [intentRegistry.target
 const executionSubstrate = await deploy("ExecutionSubstrate", [token.target, intentRegistry.target, envelopeRegistry.target]);
 const portfolioManager = await deploy("PortfolioManager", [intentRegistry.target, executionSubstrate.target]);
 
-await wait("EnvelopeRegistry.setExecutionSubstrate", envelopeRegistry.setExecutionSubstrate(executionSubstrate.target));
-await wait("ExecutionSubstrate.setPortfolioManager", executionSubstrate.setPortfolioManager(portfolioManager.target));
+await wait("EnvelopeRegistry.setExecutionSubstrate", () => envelopeRegistry.setExecutionSubstrate(executionSubstrate.target));
+await wait("ExecutionSubstrate.setPortfolioManager", () => executionSubstrate.setPortfolioManager(portfolioManager.target));
 
 const vaults = [];
 for (const [name, bucket, apyBps] of vaultConfigs) {
   const vault = await deploy("MockVault4626", [token.target, ethers.encodeBytes32String(name), ethers.id(bucket), apyBps]);
   vaults.push({ name, bucket, apyBps, address: vault.target });
-  await wait(`EnvelopeRegistry.registerVaultMetadata(${name})`, envelopeRegistry.registerVaultMetadata(vault.target, ethers.id(bucket)));
+  await wait(`EnvelopeRegistry.registerVaultMetadata(${name})`, () => envelopeRegistry.registerVaultMetadata(vault.target, ethers.id(bucket)));
 }
 
 const terms = {
@@ -77,22 +143,24 @@ const terms = {
 };
 const approvedVaults = vaults.map((vault) => vault.address);
 const riskBucketLabels = ["Core", "Growth", "Experimental"].map((bucket) => ethers.id(bucket));
-const [agentIntentDigest, agreementHash] = await intentRegistry.createMandateIntent.staticCall(
-  terms,
-  approvedVaults,
-  riskBucketLabels
+const [agentIntentDigest, agreementHash] = await withRetry(
+  "IntentRegistry.createMandateIntent.staticCall",
+  () => intentRegistry.createMandateIntent.staticCall(terms, approvedVaults, riskBucketLabels)
 );
-await wait("IntentRegistry.createMandateIntent", intentRegistry.createMandateIntent(terms, approvedVaults, riskBucketLabels));
-await wait("IntentRegistry.acceptMandate(principal)", intentRegistry.connect(principal).acceptMandate(agentIntentDigest));
-await wait("IntentRegistry.acceptMandate(agent)", intentRegistry.connect(agent).acceptMandate(agentIntentDigest));
+await wait("IntentRegistry.createMandateIntent", () => intentRegistry.createMandateIntent(terms, approvedVaults, riskBucketLabels));
+await wait("IntentRegistry.acceptMandate(principal)", () => intentRegistry.connect(principal).acceptMandate(agentIntentDigest));
+await wait("IntentRegistry.acceptMandate(agent)", () => intentRegistry.connect(agent).acceptMandate(agentIntentDigest));
 
 const initialAllocation = vaultConfigs.map((config) => amount(config[3]));
-const envelopeId = await envelopeRegistry.registerEnvelope.staticCall(agentIntentDigest, approvedVaults, initialAllocation, 0);
-await wait("EnvelopeRegistry.registerEnvelope", envelopeRegistry.registerEnvelope(agentIntentDigest, approvedVaults, initialAllocation, 0));
-await wait("MockUSDC.mint(principal)", token.mint(principal.address, amount(10_000)));
-await wait("MockUSDC.approve(ExecutionSubstrate)", token.connect(principal).approve(executionSubstrate.target, amount(10_000)));
-await wait("ExecutionSubstrate.depositFromUser", executionSubstrate.depositFromUser(principal.address, amount(10_000)));
-await wait("ExecutionSubstrate.setInitialAllocation", executionSubstrate.setInitialAllocation(approvedVaults, initialAllocation));
+const envelopeId = await withRetry(
+  "EnvelopeRegistry.registerEnvelope.staticCall",
+  () => envelopeRegistry.registerEnvelope.staticCall(agentIntentDigest, approvedVaults, initialAllocation, 0)
+);
+await wait("EnvelopeRegistry.registerEnvelope", () => envelopeRegistry.registerEnvelope(agentIntentDigest, approvedVaults, initialAllocation, 0));
+await wait("MockUSDC.mint(principal)", () => token.mint(principal.address, amount(10_000)));
+await wait("MockUSDC.approve(ExecutionSubstrate)", () => token.connect(principal).approve(executionSubstrate.target, amount(10_000)));
+await wait("ExecutionSubstrate.depositFromUser", () => executionSubstrate.depositFromUser(principal.address, amount(10_000)));
+await wait("ExecutionSubstrate.setInitialAllocation", () => executionSubstrate.setInitialAllocation(approvedVaults, initialAllocation));
 
 const deployment = {
   network: networkName,

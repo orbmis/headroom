@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { defineConfig } from "hardhat/config";
 import hardhatEthers from "@nomicfoundation/hardhat-ethers";
 
@@ -28,7 +29,7 @@ export default defineConfig({
       type: "http",
       chainType: "l1",
       url: process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
+      accounts: [process.env.PRIVATE_KEY, process.env.AGENT_PRIVATE_KEY].filter(Boolean)
     }
   }
 });
